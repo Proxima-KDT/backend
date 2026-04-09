@@ -7,10 +7,20 @@ class KeywordStatus(BaseModel):
     status: str
 
 
+class VoiceTopicResponse(BaseModel):
+    id: str
+    category: str
+    difficulty: str
+    question: str
+    description: Optional[str] = None
+    keywords: List[str] = []
+
+
 class VoiceAnalyzeRequest(BaseModel):
     topic: str
     transcript: str
     keywords: List[str] = []
+    topic_id: Optional[str] = None
 
 
 class VoiceAnalyzeResponse(BaseModel):
@@ -20,6 +30,7 @@ class VoiceAnalyzeResponse(BaseModel):
     inaccurate: int
     missing: int
     feedback: str
+    tip: Optional[str] = None
     keywords: List[KeywordStatus] = []
 
 
@@ -34,5 +45,6 @@ class VoiceHistoryResponse(BaseModel):
     inaccurate: int
     missing: int
     feedback: Optional[str]
+    tip: Optional[str] = None
     transcript: Optional[str]
     keywords: List[KeywordStatus] = []

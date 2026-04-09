@@ -8,14 +8,15 @@ from app.schemas.subject import (
     ConceptDetailResponse,
     QuizProblemResponse,
     SubjectProgressResponse,
+    ProgressData,
 )
 
 router = APIRouter(prefix="/api/subjects", tags=["subjects"])
 
 
 @router.get("", response_model=List[SubjectResponse])
-def get_subjects(_user=Depends(get_current_user)):
-    """전체 과목 목록 반환 (개념 목록 포함)"""
+def get_subjects(user=Depends(get_current_user)):
+    """전체 과목 목록 반환 (개념 목록 + 진도 포함)"""
     supabase = get_supabase()
 
     subjects_res = supabase.table("subjects").select("*").execute()
@@ -29,19 +30,37 @@ def get_subjects(_user=Depends(get_current_user)):
     )
     concepts = concepts_res.data or []
 
-    # 과목별 문제 수 조회
+    # 모든 문제 조회 (subject_id, concept_id 포함)
     quiz_res = (
         supabase.table("problems")
-        .select("id, concept_id")
+        .select("id, subject_id, concept_id")
         .execute()
     )
     quiz_problems = quiz_res.data or []
 
-    problems_count_by_concept: dict = {}
+    # 문제 집합: subject별, concept별
+    problems_by_subject: dict = {}
+    problems_by_concept: dict = {}
     for qp in quiz_problems:
+        sid = qp.get("subject_id")
         cid = qp.get("concept_id")
+        if sid:
+            problems_by_subject.setdefault(sid, []).append(qp["id"])
         if cid:
-            problems_count_by_concept[cid] = problems_count_by_concept.get(cid, 0) + 1
+            problems_by_concept.setdefault(cid, []).append(qp["id"])
+
+    # 사용자가 푼 문제 ID 집합
+    all_problem_ids = [qp["id"] for qp in quiz_problems]
+    user_solved_ids: set = set()
+    if all_problem_ids:
+        subs_res = (
+            supabase.table("submissions")
+            .select("problem_id")
+            .eq("user_id", user["id"])
+            .in_("problem_id", all_problem_ids)
+            .execute()
+        )
+        user_solved_ids = set(s["problem_id"] for s in (subs_res.data or []))
 
     concepts_by_subject: dict = {}
     for concept in concepts:
@@ -51,15 +70,27 @@ def get_subjects(_user=Depends(get_current_user)):
     result = []
     for subject in subjects:
         sid = subject["id"]
-        subject_concepts = [
-            ConceptResponse(
-                id=c["id"],
-                title=c["title"],
-                description=c.get("description"),
-                problems_count=problems_count_by_concept.get(c["id"], 0),
+        subject_problem_ids = problems_by_subject.get(sid, [])
+        total = len(subject_problem_ids)
+        solved = len(set(subject_problem_ids) & user_solved_ids)
+        percent = int((solved / total * 100)) if total > 0 else 0
+
+        subject_concepts = []
+        for c in concepts_by_subject.get(sid, []):
+            cid = c["id"]
+            concept_problem_ids = problems_by_concept.get(cid, [])
+            c_total = len(concept_problem_ids)
+            c_solved = len(set(concept_problem_ids) & user_solved_ids)
+            c_percent = int((c_solved / c_total * 100)) if c_total > 0 else 0
+            subject_concepts.append(
+                ConceptResponse(
+                    id=cid,
+                    title=c["title"],
+                    description=c.get("description"),
+                    problems_count=c_total,
+                    progress=ProgressData(solved=c_solved, total=c_total, percent=c_percent),
+                )
             )
-            for c in concepts_by_subject.get(sid, [])
-        ]
         result.append(
             SubjectResponse(
                 id=sid,
@@ -69,13 +100,14 @@ def get_subjects(_user=Depends(get_current_user)):
                 color=subject.get("color"),
                 phase=subject.get("phase"),
                 concepts=subject_concepts,
+                progress=ProgressData(solved=solved, total=total, percent=percent),
             )
         )
     return result
 
 
 @router.get("/{subject_id}", response_model=SubjectResponse)
-def get_subject_detail(subject_id: str, _user=Depends(get_current_user)):
+def get_subject_detail(subject_id: str, user=Depends(get_current_user)):
     """과목 상세 조회 (개념 목록 포함)"""
     supabase = get_supabase()
 
@@ -100,8 +132,11 @@ def get_subject_detail(subject_id: str, _user=Depends(get_current_user)):
     concepts = concepts_res.data or []
 
     concept_ids = [c["id"] for c in concepts]
+    problems_by_concept: dict = {}
     quiz_count_by_concept: dict = {}
+
     if concept_ids:
+        # 개념별 문제 조회
         quiz_res = (
             supabase.table("problems")
             .select("id, concept_id")
@@ -110,17 +145,51 @@ def get_subject_detail(subject_id: str, _user=Depends(get_current_user)):
         )
         for qp in (quiz_res.data or []):
             cid = qp["concept_id"]
+            problems_by_concept.setdefault(cid, []).append(qp["id"])
             quiz_count_by_concept[cid] = quiz_count_by_concept.get(cid, 0) + 1
 
-    subject_concepts = [
-        ConceptResponse(
-            id=c["id"],
-            title=c["title"],
-            description=c.get("description"),
-            problems_count=quiz_count_by_concept.get(c["id"], 0),
+        # 사용자의 제출 기록 조회
+        all_problem_ids = []
+        for pid_list in problems_by_concept.values():
+            all_problem_ids.extend(pid_list)
+
+        user_solved: dict = {}
+        if all_problem_ids:
+            subs_res = (
+                supabase.table("submissions")
+                .select("problem_id")
+                .eq("user_id", user["id"])
+                .in_("problem_id", all_problem_ids)
+                .execute()
+            )
+            # 사용자가 푼 문제 ID 집합
+            user_problem_ids = set(s["problem_id"] for s in (subs_res.data or []))
+
+            # 개념별로 푼 문제 수 계산
+            for concept_id, problem_ids in problems_by_concept.items():
+                solved = len(set(problem_ids) & user_problem_ids)
+                user_solved[concept_id] = solved
+
+    subject_concepts = []
+    for c in concepts:
+        concept_id = c["id"]
+        total = quiz_count_by_concept.get(concept_id, 0)
+        solved = user_solved.get(concept_id, 0)
+        percent = int((solved / total * 100)) if total > 0 else 0
+
+        subject_concepts.append(
+            ConceptResponse(
+                id=concept_id,
+                title=c["title"],
+                description=c.get("description"),
+                problems_count=total,
+                progress=ProgressData(
+                    solved=solved,
+                    total=total,
+                    percent=percent
+                )
+            )
         )
-        for c in concepts
-    ]
 
     return SubjectResponse(
         id=subject["id"],

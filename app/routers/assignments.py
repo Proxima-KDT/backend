@@ -38,6 +38,18 @@ async def list_assignments(user=Depends(get_current_user)):
         aid = str(a["id"])
         sa = student_map.get(aid)
 
+        # rubric 템플릿(assignments.rubric)과 채점 결과(submissions.rubric_scores)를 병합
+        rubric_template = a.get("rubric") or []
+        rubric_scores = (sa.get("rubric_scores") or []) if sa else []
+        score_map = {rs["item"]: rs.get("score") for rs in rubric_scores}
+        if rubric_template and score_map:
+            merged_rubric = [
+                {**r, "score": score_map.get(r.get("item"))}
+                for r in rubric_template
+            ]
+        else:
+            merged_rubric = rubric_template or None
+
         result.append(
             AssignmentResponse(
                 id=aid,
@@ -48,7 +60,7 @@ async def list_assignments(user=Depends(get_current_user)):
                 due_date=a.get("due_date"),
                 max_score=a.get("max_score", 100),
                 score=sa.get("score") if sa else None,
-                rubric=a.get("rubric"),
+                rubric=merged_rubric,
                 feedback=sa.get("feedback") if sa else None,
                 attachments=a.get("attachments") or [],
                 submitted_files=sa.get("files") or [] if sa else [],
@@ -68,20 +80,31 @@ async def submit_assignment(
     supabase = get_supabase()
     from datetime import datetime
 
+    # URL path는 str이지만 DB의 assignment_id는 INTEGER
+    try:
+        assignment_id_int = int(assignment_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="잘못된 과제 ID입니다.")
+
     assignment_res = (
         supabase.table("assignments")
         .select("id")
-        .eq("id", assignment_id)
+        .eq("id", assignment_id_int)
         .execute()
     )
     if not assignment_res.data:
         raise HTTPException(status_code=404, detail="과제를 찾을 수 없습니다.")
 
     # 파일 업로드
+    # 파일명에 한글 등 비ASCII 문자가 있으면 InvalidKey 오류가 발생하므로
+    # path에는 UUID 기반 안전한 이름을 사용하고, 원본 파일명은 메타데이터로 보존
+    import uuid, os
     uploaded_files = []
     for file in files:
         contents = await file.read()
-        path = f"assignments/{assignment_id}/{user['id']}/{file.filename}"
+        ext = os.path.splitext(file.filename)[1]  # 확장자 추출 (.py, .zip 등)
+        safe_name = f"{uuid.uuid4().hex}{ext}"
+        path = f"assignments/{assignment_id_int}/{user['id']}/{safe_name}"
         supabase.storage.from_("uploads").upload(
             path, contents, {"content-type": file.content_type or "application/octet-stream"}
         )
@@ -96,7 +119,7 @@ async def submit_assignment(
     existing_res = (
         supabase.table("assignment_submissions")
         .select("id, status")
-        .eq("assignment_id", assignment_id)
+        .eq("assignment_id", assignment_id_int)
         .eq("student_id", user["id"])
         .execute()
     )
@@ -114,7 +137,7 @@ async def submit_assignment(
             supabase.table("assignment_submissions")
             .insert(
                 {
-                    "assignment_id": assignment_id,
+                    "assignment_id": assignment_id_int,
                     "student_id": user["id"],
                     "student_name": student_name,
                     "status": "submitted",

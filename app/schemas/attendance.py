@@ -10,6 +10,7 @@ class AttendanceRecordResponse(BaseModel):
     date: str
     status: Optional[str]
     time: Optional[str]
+    check_out_time: Optional[str] = None
 
 
 class AttendanceMonthlyResponse(BaseModel):

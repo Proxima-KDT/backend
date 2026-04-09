@@ -116,12 +116,25 @@ def create_reservation(body: ReservationCreateRequest, user=Depends(get_current_
     if conflict_res.data:
         raise HTTPException(status_code=409, detail="해당 시간대에 이미 예약이 있습니다.")
 
+    # 방 정보 조회 (insert 시 비정규화 컬럼에 함께 저장)
+    room_res = (
+        supabase.table("rooms").select("name, type").eq("id", body.room_id).maybe_single().execute()
+    )
+    room_data = room_res.data or {}
+
+    # 사용자 이름 조회
+    user_res = supabase.table("users").select("name").eq("id", user["id"]).execute()
+    user_name = user_res.data[0]["name"] if user_res.data else None
+
     res = (
         supabase.table("room_reservations")
         .insert(
             {
                 "room_id": body.room_id,
                 "user_id": user["id"],
+                "user_name": user_name,
+                "room_name": room_data.get("name"),
+                "room_type": room_data.get("type"),
                 "date": body.date,
                 "start_time": body.start_time,
                 "end_time": body.end_time,
@@ -132,12 +145,6 @@ def create_reservation(body: ReservationCreateRequest, user=Depends(get_current_
         .execute()
     )
     r = res.data[0]
-
-    # 방 정보 조회
-    room_res = (
-        supabase.table("rooms").select("name, type").eq("id", body.room_id).maybe_single().execute()
-    )
-    room_data = room_res.data or {}
 
     return ReservationResponse(
         id=str(r["id"]),
@@ -165,9 +172,10 @@ def cancel_reservation(reservation_id: str, user=Depends(get_current_user)):
     )
     if not res.data:
         raise HTTPException(status_code=404, detail="예약을 찾을 수 없습니다.")
-    if res.data.get("user_id") != user["id"]:
+    reservation = res.data[0]
+    if reservation.get("user_id") != user["id"]:
         raise HTTPException(status_code=403, detail="본인의 예약만 취소할 수 있습니다.")
-    if res.data.get("status") == "cancelled":
+    if reservation.get("status") == "cancelled":
         raise HTTPException(status_code=409, detail="이미 취소된 예약입니다.")
 
     supabase.table("room_reservations").update({"status": "cancelled"}).eq(

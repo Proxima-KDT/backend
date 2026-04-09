@@ -97,7 +97,7 @@ def delete_question(question_id: str, user=Depends(get_current_user)):
     )
     if not res.data:
         raise HTTPException(status_code=404, detail="질문을 찾을 수 없습니다.")
-    if res.data.get("user_id") != user["id"]:
+    if res.data[0].get("user_id") != user["id"]:
         raise HTTPException(status_code=403, detail="본인의 질문만 삭제할 수 있습니다.")
 
     supabase.table("questions").delete().eq("id", question_id).execute()

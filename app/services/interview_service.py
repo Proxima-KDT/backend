@@ -12,7 +12,7 @@ from app.utils.prompts import (
 # 인메모리 세션 저장소 (추후 Supabase Redis로 교체)
 _sessions: dict = {}
 
-TOTAL_QUESTIONS = 7
+TOTAL_QUESTIONS = 5
 
 _client: AsyncOpenAI | None = None
 

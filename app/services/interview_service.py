@@ -14,7 +14,14 @@ _sessions: dict = {}
 
 TOTAL_QUESTIONS = 7
 
-client = AsyncOpenAI()  # OPENAI_API_KEY 환경변수 자동 참조
+_client: AsyncOpenAI | None = None
+
+
+def _get_client() -> AsyncOpenAI:
+    global _client
+    if _client is None:
+        _client = AsyncOpenAI()
+    return _client
 
 
 async def start_interview(
@@ -27,7 +34,7 @@ async def start_interview(
     system_prompt = get_interview_system_prompt(company, position, interview_type)
 
     # 첫 질문 생성
-    response = await client.chat.completions.create(
+    response = await _get_client().chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": system_prompt},
@@ -93,7 +100,7 @@ async def process_answer(session_id: str, answer: str) -> dict:
         "content": f"(시스템: 현재 {question_count}번째 질문까지 완료했습니다. {next_q_number}번째 질문을 해주세요.)",
     })
 
-    response = await client.chat.completions.create(
+    response = await _get_client().chat.completions.create(
         model="gpt-4o-mini",
         messages=session["messages"],
         temperature=0.7,
@@ -127,7 +134,7 @@ async def end_interview(session_id: str) -> dict:
         qa_pairs=session["qa_pairs"],
     )
 
-    response = await client.chat.completions.create(
+    response = await _get_client().chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": report_prompt}],
         temperature=0.3,

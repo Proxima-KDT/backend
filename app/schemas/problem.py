@@ -3,9 +3,9 @@ from typing import List, Optional
 
 
 class ProblemResponse(BaseModel):
-    id: int
-    title: str
-    description: Optional[str]
+    id: str
+    title: Optional[str]
+    question: Optional[str]
     type: str
     difficulty: Optional[str]
     tags: List[str] = []
@@ -13,7 +13,7 @@ class ProblemResponse(BaseModel):
     submitted: bool = False
     score: Optional[int] = None
     choices: Optional[list] = None
-    correct_answer: Optional[str] = None
+    answer: Optional[int] = None
 
 
 class ProblemSubmitRequest(BaseModel):

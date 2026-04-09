@@ -33,10 +33,10 @@ def get_counseling_schedule(
     end_year = year if mon < 12 else year + 1
     end_date = f"{end_year}-{end_mon:02d}-01"
 
-    # 예약 목록
+    # 예약 목록 (counseling_bookings에 student_name 직접 저장됨)
     bookings_res = (
         supabase.table("counseling_bookings")
-        .select("*, profiles!counseling_bookings_user_id_fkey(name)")
+        .select("*")
         .gte("date", start_date)
         .lt("date", end_date)
         .order("date")
@@ -45,11 +45,12 @@ def get_counseling_schedule(
     )
     bookings = []
     for b in (bookings_res.data or []):
-        profile = b.get("profiles") or {}
         bookings.append({
             "id": str(b["id"]),
-            "student_id": str(b.get("user_id", "")),
-            "student_name": profile.get("name") if isinstance(profile, dict) else None,
+            "student_id": str(b.get("student_id", "")),
+            "student_name": b.get("student_name"),
+            "counselor_id": str(b.get("counselor_id", "")),
+            "counselor_name": b.get("counselor_name"),
             "date": b["date"],
             "time": b.get("time", ""),
             "duration": b.get("duration", 30),
@@ -57,11 +58,10 @@ def get_counseling_schedule(
             "status": b.get("status", "pending"),
         })
 
-    # 차단 슬롯 (is_available=False인 슬롯)
+    # 차단 슬롯 (counseling_blocked_slots)
     blocked_res = (
-        supabase.table("counseling_slots")
-        .select("date, time_slot")
-        .eq("is_available", False)
+        supabase.table("counseling_blocked_slots")
+        .select("counselor_id, date, time")
         .gte("date", start_date)
         .lt("date", end_date)
         .execute()
@@ -69,7 +69,7 @@ def get_counseling_schedule(
     blocked_slots: Dict[str, List[str]] = {}
     for slot in (blocked_res.data or []):
         d = slot["date"]
-        blocked_slots.setdefault(d, []).append(slot["time_slot"])
+        blocked_slots.setdefault(d, []).append(slot["time"])
 
     return {
         "bookings": bookings,
@@ -88,35 +88,29 @@ def update_blocked_slots(
 
     # 기존 차단 슬롯 가져오기
     existing_res = (
-        supabase.table("counseling_slots")
-        .select("id, time_slot, is_available")
+        supabase.table("counseling_blocked_slots")
+        .select("id, time")
+        .eq("counselor_id", user["id"])
         .eq("date", date_str)
         .execute()
     )
-    existing_map = {s["time_slot"]: s for s in (existing_res.data or [])}
+    existing_map = {s["time"]: s for s in (existing_res.data or [])}
 
-    # 요청된 차단 시간 처리
+    # 새로 차단할 시간 추가
     for time_slot in body.blocked_times:
-        if time_slot in existing_map:
-            # 있으면 is_available=False로 업데이트
-            supabase.table("counseling_slots").update(
-                {"is_available": False}
-            ).eq("id", existing_map[time_slot]["id"]).execute()
-        else:
-            # 없으면 새로 생성 (차단)
-            supabase.table("counseling_slots").insert({
+        if time_slot not in existing_map:
+            supabase.table("counseling_blocked_slots").insert({
+                "counselor_id": user["id"],
                 "date": date_str,
-                "time_slot": time_slot,
-                "is_available": False,
-                # counselor_id 없이 관리자/강사가 직접 차단
+                "time": time_slot,
             }).execute()
 
-    # 차단 해제: 기존에 차단이었지만 새 목록에 없는 슬롯 → is_available=True
+    # 차단 해제: 기존에 있었지만 새 목록에 없는 슬롯 → 삭제
     for time_slot, slot_data in existing_map.items():
-        if time_slot not in body.blocked_times and not slot_data.get("is_available"):
-            supabase.table("counseling_slots").update(
-                {"is_available": True}
-            ).eq("id", slot_data["id"]).execute()
+        if time_slot not in body.blocked_times:
+            supabase.table("counseling_blocked_slots").delete().eq(
+                "id", slot_data["id"]
+            ).execute()
 
     return {"message": "차단 슬롯이 업데이트되었습니다."}
 
@@ -134,7 +128,7 @@ def list_manage_bookings(
 
     query = (
         supabase.table("counseling_bookings")
-        .select("*, profiles!counseling_bookings_user_id_fkey(name)")
+        .select("*")
         .order("date", desc=True)
         .order("time")
     )
@@ -157,8 +151,8 @@ def list_manage_bookings(
     return [
         CounselingBookingResponse(
             id=str(b["id"]),
-            student_id=str(b.get("user_id", "")),
-            student_name=(b.get("profiles") or {}).get("name") if isinstance(b.get("profiles"), dict) else None,
+            student_id=str(b.get("student_id", "")),
+            student_name=b.get("student_name"),
             date=b["date"],
             time=b.get("time", ""),
             duration=b.get("duration", 30),
@@ -194,23 +188,6 @@ def update_booking_status(
         {"status": body.status}
     ).eq("id", booking_id).execute()
 
-    # 취소 시 슬롯 다시 열기
-    if body.status == "cancelled":
-        booking = existing.data
-        booking_detail = (
-            supabase.table("counseling_bookings")
-            .select("counselor_id, date, time")
-            .eq("id", booking_id)
-            .execute()
-        )
-        if booking_detail.data:
-            bd = booking_detail.data
-            supabase.table("counseling_slots").update(
-                {"is_available": True}
-            ).eq("counselor_id", bd["counselor_id"]).eq(
-                "date", bd["date"]
-            ).eq("time_slot", bd["time"]).execute()
-
     status_label = "확정" if body.status == "confirmed" else "취소"
     return {"message": f"상담 예약이 {status_label}되었습니다."}
 
@@ -221,12 +198,12 @@ def get_blocked_slots(date_str: str, user=Depends(get_teacher_or_admin)):
     supabase = get_supabase()
 
     res = (
-        supabase.table("counseling_slots")
-        .select("time_slot")
+        supabase.table("counseling_blocked_slots")
+        .select("time")
+        .eq("counselor_id", user["id"])
         .eq("date", date_str)
-        .eq("is_available", False)
-        .order("time_slot")
+        .order("time")
         .execute()
     )
-    blocked = [s["time_slot"] for s in (res.data or [])]
+    blocked = [s["time"] for s in (res.data or [])]
     return blocked

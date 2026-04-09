@@ -2,10 +2,9 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 
-class PhaseTaskResponse(BaseModel):
-    id: int
+class PhaseTaskItem(BaseModel):
     name: str
-    progress: int
+    progress: int = 0
 
 
 class CurriculumPhaseResponse(BaseModel):
@@ -18,4 +17,5 @@ class CurriculumPhaseResponse(BaseModel):
     end_date: Optional[str]
     status: str
     progress: int = 0
-    tasks: List[PhaseTaskResponse] = []
+    tasks: List[PhaseTaskItem] = []
+    tags: List[str] = []

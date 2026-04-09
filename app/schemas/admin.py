@@ -28,17 +28,17 @@ class UserRoleUpdateRequest(BaseModel):
 class AdminEquipmentResponse(BaseModel):
     id: str
     name: str
-    serial: str
+    serial_no: str
     category: Optional[str] = None
     status: str
     borrower: Optional[str] = None
     borrower_id: Optional[str] = None
-    borrowed_date: Optional[str] = None
+    borrowed_at: Optional[str] = None
 
 
 class EquipmentCreateRequest(BaseModel):
     name: str
-    serial: str
+    serial_no: str
     category: Optional[str] = None
 
 

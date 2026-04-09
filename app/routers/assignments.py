@@ -26,9 +26,9 @@ async def list_assignments(user=Depends(get_current_user)):
 
     # 학생 제출 현황 일괄 조회
     student_res = (
-        supabase.table("student_assignments")
+        supabase.table("assignment_submissions")
         .select("*")
-        .eq("user_id", user["id"])
+        .eq("student_id", user["id"])
         .execute()
     )
     student_map = {str(sa["assignment_id"]): sa for sa in (student_res.data or [])}
@@ -89,28 +89,34 @@ async def submit_assignment(
 
     now_str = datetime.now().isoformat()
 
+    # 학생 이름 조회
+    user_res = supabase.table("users").select("name").eq("id", user["id"]).execute()
+    student_name = user_res.data[0]["name"] if user_res.data else ""
+
     existing_res = (
-        supabase.table("student_assignments")
+        supabase.table("assignment_submissions")
         .select("id, status")
         .eq("assignment_id", assignment_id)
-        .eq("user_id", user["id"])
+        .eq("student_id", user["id"])
         .execute()
     )
 
     if existing_res.data:
-        if existing_res.data["status"] == "graded":
+        existing = existing_res.data[0] if isinstance(existing_res.data, list) else existing_res.data
+        if existing["status"] == "graded":
             raise HTTPException(status_code=409, detail="채점이 완료된 과제는 재제출할 수 없습니다.")
-        supabase.table("student_assignments").update(
+        supabase.table("assignment_submissions").update(
             {"status": "submitted", "files": uploaded_files, "submitted_at": now_str}
-        ).eq("id", existing_res.data["id"]).execute()
-        record_id = str(existing_res.data["id"])
+        ).eq("id", existing["id"]).execute()
+        record_id = str(existing["id"])
     else:
         res = (
-            supabase.table("student_assignments")
+            supabase.table("assignment_submissions")
             .insert(
                 {
                     "assignment_id": assignment_id,
-                    "user_id": user["id"],
+                    "student_id": user["id"],
+                    "student_name": student_name,
                     "status": "submitted",
                     "files": uploaded_files,
                     "submitted_at": now_str,
@@ -129,18 +135,19 @@ async def get_assignment_feedback(assignment_id: str, user=Depends(get_current_u
     supabase = get_supabase()
 
     res = (
-        supabase.table("student_assignments")
-        .select("score, feedback, rubric")
+        supabase.table("assignment_submissions")
+        .select("score, feedback, rubric_scores")
         .eq("assignment_id", assignment_id)
-        .eq("user_id", user["id"])
+        .eq("student_id", user["id"])
         .execute()
     )
     if not res.data:
         raise HTTPException(status_code=404, detail="제출 기록을 찾을 수 없습니다.")
 
+    data = res.data[0] if isinstance(res.data, list) else res.data
     return AssignmentFeedbackResponse(
-        score=res.data.get("score"),
-        feedback=res.data.get("feedback"),
-        rubric=res.data.get("rubric"),
+        score=data.get("score"),
+        feedback=data.get("feedback"),
+        rubric=data.get("rubric_scores"),
     )
 

@@ -28,14 +28,14 @@ def list_equipment(
 
     return [
         EquipmentResponse(
-            id=str(item["id"]),
+            id=item["id"],
             name=item["name"],
-            serial=item["serial"],
+            serial_no=item["serial_no"],
             category=item["category"],
             status=item["status"],
-            borrower=item.get("current_borrower_name"),
-            borrower_id=item.get("current_borrower_id"),
-            borrowed_date=item.get("borrowed_date"),
+            borrower_name=item.get("borrower_name"),
+            borrower_id=str(item["borrower_id"]) if item.get("borrower_id") else None,
+            borrowed_at=item.get("borrowed_at"),
         )
         for item in items
     ]
@@ -48,7 +48,6 @@ def borrow_equipment(
     """장비 대여 신청"""
     supabase = get_supabase()
 
-    # 장비 상태 확인
     eq_res = (
         supabase.table("equipment")
         .select("id, name, status")
@@ -66,41 +65,50 @@ def borrow_equipment(
             detail=f"현재 대여할 수 없는 장비입니다. (상태: {equipment['status']})",
         )
 
-    # 프로필 조회 (이름 가져오기)
-    profile_res = (
-        supabase.table("profiles")
+    # 사용자 이름 조회
+    user_res = (
+        supabase.table("users")
         .select("name")
         .eq("id", user["id"])
         .execute()
     )
-    borrower_name = profile_res.data["name"] if profile_res.data else user.get("email", "")
+    borrower_name = user_res.data[0]["name"] if user_res.data else user.get("email", "")
 
     today = date.today().isoformat()
 
-    # 장비 상태 업데이트
     supabase.table("equipment").update(
         {
             "status": "borrowed",
-            "current_borrower_id": user["id"],
-            "current_borrower_name": borrower_name,
-            "borrowed_date": today,
+            "borrower_id": user["id"],
+            "borrower_name": borrower_name,
+            "borrowed_at": today,
         }
     ).eq("id", equipment_id).execute()
 
-    # 대여 이력 기록
+    # 대여 요청 기록
     supabase.table("equipment_requests").insert(
         {
             "equipment_id": equipment_id,
+            "equipment_name": equipment["name"],
             "user_id": user["id"],
+            "student_name": borrower_name,
             "reason": body.reason,
             "status": "approved",
-            "request_type": "borrow",
-            "request_date": today,
+        }
+    ).execute()
+
+    # 장비 로그 기록
+    supabase.table("equipment_logs").insert(
+        {
+            "equipment_id": equipment_id,
+            "user_id": user["id"],
+            "action": "borrow",
+            "note": body.reason,
         }
     ).execute()
 
     return EquipmentActionResponse(
-        id=str(equipment_id),
+        id=equipment_id,
         status="borrowed",
         message=f"'{equipment['name']}' 대여가 완료되었습니다.",
     )
@@ -113,7 +121,7 @@ def return_equipment(equipment_id: int, user=Depends(get_current_user)):
 
     eq_res = (
         supabase.table("equipment")
-        .select("id, name, status, current_borrower_id")
+        .select("id, name, status, borrower_id")
         .eq("id", equipment_id)
         .single()
         .execute()
@@ -124,30 +132,29 @@ def return_equipment(equipment_id: int, user=Depends(get_current_user)):
     equipment = eq_res.data
     if equipment["status"] != "borrowed":
         raise HTTPException(status_code=409, detail="대여 중인 장비가 아닙니다.")
-    if equipment.get("current_borrower_id") != user["id"]:
+    if equipment.get("borrower_id") != user["id"]:
         raise HTTPException(status_code=403, detail="본인이 대여한 장비만 반납할 수 있습니다.")
 
     supabase.table("equipment").update(
         {
             "status": "available",
-            "current_borrower_id": None,
-            "current_borrower_name": None,
-            "borrowed_date": None,
+            "borrower_id": None,
+            "borrower_name": None,
+            "borrowed_at": None,
         }
     ).eq("id", equipment_id).execute()
 
-    supabase.table("equipment_requests").insert(
+    # 반납 로그
+    supabase.table("equipment_logs").insert(
         {
             "equipment_id": equipment_id,
             "user_id": user["id"],
-            "status": "completed",
-            "request_type": "return",
-            "request_date": date.today().isoformat(),
+            "action": "return",
         }
     ).execute()
 
     return EquipmentActionResponse(
-        id=str(equipment_id),
+        id=equipment_id,
         status="available",
         message=f"'{equipment['name']}' 반납이 완료되었습니다.",
     )

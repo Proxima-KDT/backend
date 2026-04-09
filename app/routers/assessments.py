@@ -14,7 +14,7 @@ async def list_assessments(user=Depends(get_current_user)):
 
     assessments_res = (
         supabase.table("assessments")
-        .select("*, curriculum_phases(title)")
+        .select("*")
         .order("phase_id")
         .execute()
     )
@@ -22,9 +22,9 @@ async def list_assessments(user=Depends(get_current_user)):
 
     # 학생 제출 현황 일괄 조회
     student_res = (
-        supabase.table("student_assessments")
+        supabase.table("assessment_submissions")
         .select("*")
-        .eq("user_id", user["id"])
+        .eq("student_id", user["id"])
         .execute()
     )
     student_map = {str(sa["assessment_id"]): sa for sa in (student_res.data or [])}
@@ -33,17 +33,16 @@ async def list_assessments(user=Depends(get_current_user)):
     for a in assessments:
         aid = str(a["id"])
         sa = student_map.get(aid)
-        phase_data = a.get("curriculum_phases") or {}
 
         result.append(
             AssessmentResponse(
                 id=aid,
                 phase_id=a.get("phase_id"),
-                phase_title=phase_data.get("title") if isinstance(phase_data, dict) else None,
+                phase_title=a.get("phase_title"),
                 subject=a.get("subject"),
                 description=a.get("description"),
                 status=sa["status"] if sa else _compute_assessment_status(a),
-                period={"start": a.get("start_date"), "end": a.get("end_date")},
+                period={"start": a.get("period_start"), "end": a.get("period_end")},
                 requirements=a.get("requirements") or [],
                 coverage_topics=a.get("coverage_topics") or [],
                 rubric=a.get("rubric") or [],
@@ -71,7 +70,7 @@ async def submit_assessment(
     # 평가 가져오기 및 유효성 확인
     assessment_res = (
         supabase.table("assessments")
-        .select("id, end_date")
+        .select("id, period_end")
         .eq("id", assessment_id)
         .execute()
     )
@@ -88,29 +87,35 @@ async def submit_assessment(
 
     now_str = datetime.now().isoformat()
 
-    # upsert student_assessments
+    # 학생 이름 조회
+    user_res = supabase.table("users").select("name").eq("id", user["id"]).execute()
+    student_name = user_res.data[0]["name"] if user_res.data else ""
+
+    # upsert assessment_submissions
     existing_res = (
-        supabase.table("student_assessments")
+        supabase.table("assessment_submissions")
         .select("id, status")
         .eq("assessment_id", assessment_id)
-        .eq("user_id", user["id"])
+        .eq("student_id", user["id"])
         .execute()
     )
 
     if existing_res.data:
-        if existing_res.data["status"] not in ("resubmit_required", "open", "pending"):
+        existing = existing_res.data[0] if isinstance(existing_res.data, list) else existing_res.data
+        if existing["status"] not in ("resubmit_required", "open", "pending", "locked"):
             raise HTTPException(status_code=409, detail="이미 제출된 평가입니다.")
-        supabase.table("student_assessments").update(
+        supabase.table("assessment_submissions").update(
             {"status": "submitted", "files": uploaded_files, "submitted_at": now_str}
-        ).eq("id", existing_res.data["id"]).execute()
-        record_id = str(existing_res.data["id"])
+        ).eq("id", existing["id"]).execute()
+        record_id = str(existing["id"])
     else:
         res = (
-            supabase.table("student_assessments")
+            supabase.table("assessment_submissions")
             .insert(
                 {
                     "assessment_id": assessment_id,
-                    "user_id": user["id"],
+                    "student_id": user["id"],
+                    "student_name": student_name,
                     "status": "submitted",
                     "files": uploaded_files,
                     "submitted_at": now_str,
@@ -128,8 +133,8 @@ def _compute_assessment_status(assessment: dict) -> str:
     from datetime import date
 
     today = date.today().isoformat()
-    start = assessment.get("start_date", "")
-    end = assessment.get("end_date", "")
+    start = assessment.get("period_start", "")
+    end = assessment.get("period_end", "")
 
     if end and today > end:
         return "locked"

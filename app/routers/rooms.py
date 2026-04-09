@@ -16,7 +16,7 @@ router = APIRouter(prefix="/api/rooms", tags=["rooms"])
 def list_rooms(user=Depends(get_current_user)):
     """강의실/스터디룸 목록 조회"""
     supabase = get_supabase()
-    res = supabase.table("rooms").select("*").eq("is_active", True).execute()
+    res = supabase.table("rooms").select("*").execute()
     rooms = res.data or []
 
     return [
@@ -26,6 +26,7 @@ def list_rooms(user=Depends(get_current_user)):
             type=r.get("type", "study"),
             status=r.get("status", "available"),
             capacity=r.get("capacity", 0),
+            floor=r.get("floor"),
             amenities=r.get("amenities") or [],
         )
         for r in rooms

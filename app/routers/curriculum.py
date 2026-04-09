@@ -2,7 +2,7 @@
 from typing import List
 from app.dependencies import get_current_user
 from app.utils.supabase_client import get_supabase
-from app.schemas.curriculum import CurriculumPhaseResponse, PhaseTaskResponse
+from app.schemas.curriculum import CurriculumPhaseResponse, PhaseTaskItem
 
 router = APIRouter(prefix="/api/curriculum", tags=["curriculum"])
 
@@ -13,28 +13,28 @@ def get_curriculum(_user=Depends(get_current_user)):
     supabase = get_supabase()
 
     phases_res = (
-        supabase.table("curriculum_phases")
+        supabase.table("curriculum")
         .select("*")
         .order("phase")
         .execute()
     )
     phases = phases_res.data or []
 
-    tasks_res = supabase.table("phase_tasks").select("*").execute()
-    tasks = tasks_res.data or []
-
-    tasks_by_phase: dict = {}
-    for task in tasks:
-        pid = task["phase_id"]
-        tasks_by_phase.setdefault(pid, []).append(task)
-
     result = []
     for phase in phases:
-        phase_tasks = tasks_by_phase.get(phase["id"], [])
-        if phase_tasks:
-            avg_progress = sum(t["progress"] for t in phase_tasks) // len(phase_tasks)
+        tasks_data = phase.get("tasks") or []
+        tasks = []
+        for t in tasks_data:
+            if isinstance(t, dict):
+                tasks.append(PhaseTaskItem(
+                    name=t.get("name", ""),
+                    progress=t.get("progress", 0),
+                ))
+
+        if tasks:
+            avg_progress = sum(t.progress for t in tasks) // len(tasks)
         else:
-            avg_progress = 0
+            avg_progress = phase.get("progress", 0)
 
         result.append(
             CurriculumPhaseResponse(
@@ -47,40 +47,31 @@ def get_curriculum(_user=Depends(get_current_user)):
                 end_date=str(phase["end_date"]) if phase.get("end_date") else None,
                 status=phase["status"],
                 progress=avg_progress,
-                tasks=[
-                    PhaseTaskResponse(
-                        id=t["id"],
-                        name=t["name"],
-                        progress=t["progress"],
-                    )
-                    for t in phase_tasks
-                ],
+                tasks=tasks,
+                tags=phase.get("tags") or [],
             )
         )
     return result
 
 
-@router.get("/{phase_id}/tasks", response_model=List[PhaseTaskResponse])
+@router.get("/{phase_id}/tasks", response_model=List[PhaseTaskItem])
 def get_phase_tasks(phase_id: int, _user=Depends(get_current_user)):
-    """특정 Phase의 태스크 목록 반환"""
+    """특정 Phase의 태스크 목록 반환 (JSONB에서 추출)"""
     supabase = get_supabase()
 
     phase_res = (
-        supabase.table("curriculum_phases")
-        .select("id")
+        supabase.table("curriculum")
+        .select("id, tasks")
         .eq("id", phase_id)
-        .single()
         .execute()
     )
     if not phase_res.data:
         raise HTTPException(status_code=404, detail="커리큘럼 Phase를 찾을 수 없습니다.")
 
-    tasks_res = (
-        supabase.table("phase_tasks")
-        .select("*")
-        .eq("phase_id", phase_id)
-        .execute()
-    )
-    tasks = tasks_res.data or []
-    return [PhaseTaskResponse(id=t["id"], name=t["name"], progress=t["progress"]) for t in tasks]
+    tasks_data = phase_res.data[0].get("tasks") or []
+    return [
+        PhaseTaskItem(name=t.get("name", ""), progress=t.get("progress", 0))
+        for t in tasks_data
+        if isinstance(t, dict)
+    ]
 

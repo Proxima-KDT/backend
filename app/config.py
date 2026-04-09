@@ -5,7 +5,8 @@ from functools import lru_cache
 class Settings(BaseSettings):
     # Supabase
     SUPABASE_URL: str
-    SUPABASE_KEY: str
+    SUPABASE_KEY: str           # anon key (프론트엔드용)
+    SUPABASE_SERVICE_KEY: str   # service_role key (백엔드 DB 조회용 — RLS 우회)
     SUPABASE_JWT_SECRET: str
 
     # OpenAI

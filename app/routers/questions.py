@@ -14,7 +14,7 @@ def list_questions(user=Depends(get_current_user)):
 
     res = (
         supabase.table("questions")
-        .select("*, profiles(name)")
+        .select("*, users(name)")
         .order("created_at", desc=True)
         .execute()
     )
@@ -22,11 +22,11 @@ def list_questions(user=Depends(get_current_user)):
 
     result = []
     for q in questions:
-        profile_data = q.get("profiles") or {}
+        user_data = q.get("users") or {}
         # 익명 질문은 작성자 이름 숨김
         author = None
         if not q.get("is_anonymous"):
-            author = profile_data.get("name") if isinstance(profile_data, dict) else None
+            author = user_data.get("name") if isinstance(user_data, dict) else None
 
         result.append(
             QuestionResponse(
@@ -64,13 +64,13 @@ def create_question(body: QuestionCreateRequest, user=Depends(get_current_user))
     # 작성자 이름 조회 (익명이 아닌 경우)
     author = None
     if not body.is_anonymous:
-        profile_res = (
-            supabase.table("profiles")
+        user_res = (
+            supabase.table("users")
             .select("name")
             .eq("id", user["id"])
             .execute()
         )
-        author = profile_res.data.get("name") if profile_res.data else None
+        author = user_res.data[0].get("name") if user_res.data else None
 
     return QuestionResponse(
         id=str(q["id"]),

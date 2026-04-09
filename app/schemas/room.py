@@ -8,6 +8,7 @@ class RoomResponse(BaseModel):
     type: str
     status: str
     capacity: int
+    floor: Optional[int] = None
     amenities: List[str] = []
 
 

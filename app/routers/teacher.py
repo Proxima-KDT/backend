@@ -44,7 +44,7 @@ async def list_students(user=Depends(get_current_teacher)):
     supabase = get_supabase()
 
     profiles_res = (
-        supabase.table("profiles")
+        supabase.table("users")
         .select("*")
         .eq("role", "student")
         .order("name")
@@ -55,11 +55,11 @@ async def list_students(user=Depends(get_current_teacher)):
     if not students:
         return []
 
-    student_ids = [s.get("user_id") or s.get("id") for s in students]
+    student_ids = [s["id"] for s in students]
 
     # 배치 쿼리 — 학생 수에 관계없이 쿼리 5개로 고정
     att_res = (
-        supabase.table("attendance_records")
+        supabase.table("attendance")
         .select("user_id, status")
         .in_("user_id", student_ids)
         .execute()
@@ -69,22 +69,22 @@ async def list_students(user=Depends(get_current_teacher)):
     total_assignments = assign_res.count or 0
 
     submitted_res = (
-        supabase.table("student_assignments")
-        .select("user_id, id", count="exact")
-        .in_("user_id", student_ids)
+        supabase.table("assignment_submissions")
+        .select("student_id, id", count="exact")
+        .in_("student_id", student_ids)
         .neq("status", "pending")
         .execute()
     )
     skills_res = (
         supabase.table("skill_scores")
-        .select("user_id, category, score")
+        .select("user_id, attendance, ai_speaking, ai_interview, portfolio, project_assignment_exam")
         .in_("user_id", student_ids)
         .execute()
     )
     files_res = (
         supabase.table("student_files")
-        .select("user_id, file_name, file_type, file_url, uploaded_at")
-        .in_("user_id", student_ids)
+        .select("student_id, name, type, url, uploaded_at")
+        .in_("student_id", student_ids)
         .execute()
     )
 
@@ -95,27 +95,33 @@ async def list_students(user=Depends(get_current_teacher)):
 
     submitted_by_user: dict = {}
     for sub in (submitted_res.data or []):
-        submitted_by_user[sub["user_id"]] = submitted_by_user.get(sub["user_id"], 0) + 1
+        submitted_by_user[sub["student_id"]] = submitted_by_user.get(sub["student_id"], 0) + 1
 
     skills_by_user: dict = {}
     for sk in (skills_res.data or []):
-        skills_by_user.setdefault(sk["user_id"], {})[sk["category"]] = sk["score"]
+        skills_by_user[sk["user_id"]] = {
+            "출결": sk.get("attendance", 0),
+            "AI_말하기": sk.get("ai_speaking", 0),
+            "AI_면접": sk.get("ai_interview", 0),
+            "포트폴리오": sk.get("portfolio", 0),
+            "프로젝트_과제_시험": sk.get("project_assignment_exam", 0),
+        }
 
     files_by_user: dict = {}
     for f in (files_res.data or []):
-        files_by_user.setdefault(f["user_id"], []).append({
-            "name": f.get("file_name", ""),
-            "type": f.get("file_type", ""),
-            "url": f.get("file_url", ""),
+        files_by_user.setdefault(f["student_id"], []).append({
+            "name": f.get("name", ""),
+            "type": f.get("type", ""),
+            "url": f.get("url", ""),
             "uploaded_at": f.get("uploaded_at", "")[:10] if f.get("uploaded_at") else None,
         })
 
     result = []
     for s in students:
-        uid = s.get("user_id") or s.get("id")
+        uid = s["id"]
         records = att_by_user.get(uid, [])
         total_att = len(records)
-        attended = sum(1 for r in records if r in ("present", "late", "early_leave"))
+        attended = sum(1 for r in records if r in ("present", "late"))
         att_rate = round((attended / total_att) * 100, 1) if total_att > 0 else 0
 
         submitted_count = submitted_by_user.get(uid, 0)
@@ -146,36 +152,36 @@ async def get_student_detail(student_id: str, user=Depends(get_current_teacher))
     supabase = get_supabase()
 
     profile_res = (
-        supabase.table("profiles")
+        supabase.table("users")
         .select("*")
-        .eq("user_id", student_id)
+        .eq("id", student_id)
         .execute()
     )
     if not profile_res.data:
         raise HTTPException(status_code=404, detail="학생을 찾을 수 없습니다.")
 
-    s = profile_res.data
-    uid = s.get("user_id") or s.get("id")
+    s = profile_res.data[0] if isinstance(profile_res.data, list) else profile_res.data
+    uid = s["id"]
 
     # 출석률
     att_res = (
-        supabase.table("attendance_records")
+        supabase.table("attendance")
         .select("status")
         .eq("user_id", uid)
         .execute()
     )
     att_records = att_res.data or []
     total_att = len(att_records)
-    attended = sum(1 for a in att_records if a.get("status") in ("present", "late", "early_leave"))
+    attended = sum(1 for a in att_records if a.get("status") in ("present", "late"))
     att_rate = round((attended / total_att) * 100, 1) if total_att > 0 else 0
 
     # 제출률
     assign_res = supabase.table("assignments").select("id", count="exact").execute()
     total_assignments = assign_res.count or 0
     submitted_res = (
-        supabase.table("student_assignments")
+        supabase.table("assignment_submissions")
         .select("id", count="exact")
-        .eq("user_id", uid)
+        .eq("student_id", uid)
         .neq("status", "pending")
         .execute()
     )
@@ -185,11 +191,18 @@ async def get_student_detail(student_id: str, user=Depends(get_current_teacher))
     # 스킬
     skills_res = (
         supabase.table("skill_scores")
-        .select("category, score")
+        .select("attendance, ai_speaking, ai_interview, portfolio, project_assignment_exam")
         .eq("user_id", uid)
         .execute()
     )
-    skills = {sk["category"]: sk["score"] for sk in (skills_res.data or [])}
+    sk = skills_res.data[0] if skills_res.data else {}
+    skills = {
+        "출결": sk.get("attendance", 0),
+        "AI_말하기": sk.get("ai_speaking", 0),
+        "AI_면접": sk.get("ai_interview", 0),
+        "포트폴리오": sk.get("portfolio", 0),
+        "프로젝트_과제_시험": sk.get("project_assignment_exam", 0),
+    }
 
     # 파일
     files = _get_student_files(supabase, uid)
@@ -224,7 +237,7 @@ async def get_student_weekly_attendance(
     sunday = monday + timedelta(days=6)
 
     res = (
-        supabase.table("attendance_records")
+        supabase.table("attendance")
         .select("date, status, check_in_time")
         .eq("user_id", student_id)
         .gte("date", monday.isoformat())
@@ -250,27 +263,20 @@ async def get_student_weekly_attendance(
 async def update_student_notes(
     student_id: str, body: StudentNoteUpdate, user=Depends(get_current_teacher)
 ):
-    """학생 상담 메모 저장/수정"""
+    """학생 상담 메모 저장/수정 — counseling_records에 저장"""
     supabase = get_supabase()
 
-    existing = (
-        supabase.table("counseling_notes")
-        .select("id")
-        .eq("student_id", student_id)
-        .eq("teacher_id", user["id"])
-        .execute()
-    )
+    # 학생 이름 조회
+    student_res = supabase.table("users").select("name").eq("id", student_id).execute()
+    student_name = student_res.data[0]["name"] if student_res.data else ""
 
-    if existing.data:
-        supabase.table("counseling_notes").update(
-            {"notes": body.notes, "updated_at": datetime.now().isoformat()}
-        ).eq("id", existing.data["id"]).execute()
-    else:
-        supabase.table("counseling_notes").insert({
-            "student_id": student_id,
-            "teacher_id": user["id"],
-            "notes": body.notes,
-        }).execute()
+    supabase.table("counseling_records").insert({
+        "student_id": student_id,
+        "student_name": student_name,
+        "counselor_id": user["id"],
+        "date": date.today().isoformat(),
+        "summary": body.notes,
+    }).execute()
 
     return {"message": "상담 메모가 저장되었습니다."}
 
@@ -306,7 +312,7 @@ async def get_daily_attendance(date_str: str, user=Depends(get_current_teacher))
     supabase = get_supabase()
 
     att_res = (
-        supabase.table("attendance_records")
+        supabase.table("attendance")
         .select("user_id, status, check_in_time")
         .eq("date", date_str)
         .execute()
@@ -320,15 +326,15 @@ async def get_daily_attendance(date_str: str, user=Depends(get_current_teacher))
             seats_map[seat["student_id"]] = seat.get("seat_id")
 
     students_res = (
-        supabase.table("profiles")
-        .select("user_id, name")
+        supabase.table("users")
+        .select("id, name")
         .eq("role", "student")
         .execute()
     )
 
     result = []
     for student in (students_res.data or []):
-        uid = student["user_id"]
+        uid = student["id"]
         att = att_map.get(uid, {})
         result.append(
             DailyAttendanceRecord(
@@ -353,7 +359,7 @@ async def update_attendance_status(
     supabase = get_supabase()
 
     existing = (
-        supabase.table("attendance_records")
+        supabase.table("attendance")
         .select("id")
         .eq("user_id", student_id)
         .eq("date", date_str)
@@ -361,11 +367,12 @@ async def update_attendance_status(
     )
 
     if existing.data:
-        supabase.table("attendance_records").update(
+        existing_rec = existing.data[0] if isinstance(existing.data, list) else existing.data
+        supabase.table("attendance").update(
             {"status": body.status}
-        ).eq("id", existing.data["id"]).execute()
+        ).eq("id", existing_rec["id"]).execute()
     else:
-        supabase.table("attendance_records").insert({
+        supabase.table("attendance").insert({
             "user_id": student_id,
             "date": date_str,
             "status": body.status,
@@ -398,41 +405,33 @@ async def list_teacher_assignments(user=Depends(get_current_teacher)):
         aid = str(a["id"])
 
         subs_res = (
-            supabase.table("student_assignments")
+            supabase.table("assignment_submissions")
             .select("*")
             .eq("assignment_id", aid)
             .execute()
         )
-        subs_map = {str(sub["user_id"]): sub for sub in (subs_res.data or [])}
-
-        files_res = (
-            supabase.table("assignment_files")
-            .select("*")
-            .eq("type", "submission")
-            .execute()
-        )
-        files_by_sa = {}
-        for f in (files_res.data or []):
-            sa_id = str(f.get("student_assignment_id", ""))
-            files_by_sa.setdefault(sa_id, []).append(
-                FileItem(name=f["file_name"], size=f.get("file_size"), url=f.get("file_url"))
-            )
+        subs_map = {str(sub["student_id"]): sub for sub in (subs_res.data or [])}
 
         student_submissions = []
         for student in students:
-            sid = student["user_id"]
+            sid = student["id"]
             sub = subs_map.get(sid)
-            sa_id = str(sub["id"]) if sub else ""
+            sub_files = []
+            if sub and sub.get("files"):
+                sub_files = [
+                    FileItem(name=f.get("name", ""), url=f.get("path"))
+                    for f in (sub["files"] if isinstance(sub["files"], list) else [])
+                ]
             student_submissions.append(
                 StudentSubmission(
                     studentId=sid,
                     studentName=student.get("name", ""),
                     status=sub["status"] if sub else "pending",
                     submittedAt=sub.get("submitted_at") if sub else None,
-                    files=files_by_sa.get(sa_id, []),
+                    files=sub_files,
                     score=sub.get("score") if sub else None,
                     feedback=sub.get("feedback") if sub else None,
-                    rubricScores=sub.get("rubric") if sub else None,
+                    rubricScores=sub.get("rubric_scores") if sub else None,
                 )
             )
 
@@ -500,16 +499,16 @@ async def get_teacher_assignment_detail(assignment_id: str, user=Depends(get_cur
     students = _get_all_students(supabase)
 
     subs_res = (
-        supabase.table("student_assignments")
+        supabase.table("assignment_submissions")
         .select("*")
         .eq("assignment_id", assignment_id)
         .execute()
     )
-    subs_map = {str(sub["user_id"]): sub for sub in (subs_res.data or [])}
+    subs_map = {str(sub["student_id"]): sub for sub in (subs_res.data or [])}
 
     student_submissions = []
     for student in students:
-        sid = student["user_id"]
+        sid = student["id"]
         sub = subs_map.get(sid)
         student_submissions.append(
             StudentSubmission(
@@ -520,7 +519,7 @@ async def get_teacher_assignment_detail(assignment_id: str, user=Depends(get_cur
                 files=[],
                 score=sub.get("score") if sub else None,
                 feedback=sub.get("feedback") if sub else None,
-                rubricScores=sub.get("rubric") if sub else None,
+                rubricScores=sub.get("rubric_scores") if sub else None,
             )
         )
 
@@ -556,10 +555,10 @@ async def grade_assignment_submission(
     supabase = get_supabase()
 
     existing = (
-        supabase.table("student_assignments")
+        supabase.table("assignment_submissions")
         .select("id")
         .eq("assignment_id", assignment_id)
-        .eq("user_id", student_id)
+        .eq("student_id", student_id)
         .execute()
     )
     if not existing.data:
@@ -571,13 +570,14 @@ async def grade_assignment_submission(
         "status": body.status,
     }
     if body.rubricScores:
-        update_data["rubric"] = [
+        update_data["rubric_scores"] = [
             {"item": rs.item, "score": rs.score, "maxScore": rs.maxScore}
             for rs in body.rubricScores
         ]
 
-    supabase.table("student_assignments").update(update_data).eq(
-        "id", existing.data["id"]
+    existing_rec = existing.data[0] if isinstance(existing.data, list) else existing.data
+    supabase.table("assignment_submissions").update(update_data).eq(
+        "id", existing_rec["id"]
     ).execute()
 
     return {"message": "채점이 완료되었습니다."}
@@ -613,7 +613,7 @@ async def list_teacher_assessments(user=Depends(get_current_teacher)):
 
     assessments_res = (
         supabase.table("assessments")
-        .select("*, curriculum_phases(title)")
+        .select("*")
         .order("phase_id")
         .execute()
     )
@@ -623,19 +623,18 @@ async def list_teacher_assessments(user=Depends(get_current_teacher)):
     result = []
     for a in assessments:
         aid = str(a["id"])
-        phase_data = a.get("curriculum_phases") or {}
 
         subs_res = (
-            supabase.table("student_assessments")
+            supabase.table("assessment_submissions")
             .select("*")
             .eq("assessment_id", aid)
             .execute()
         )
-        subs_map = {str(sub["user_id"]): sub for sub in (subs_res.data or [])}
+        subs_map = {str(sub["student_id"]): sub for sub in (subs_res.data or [])}
 
         student_submissions = []
         for student in students:
-            sid = student["user_id"]
+            sid = student["id"]
             sub = subs_map.get(sid)
             student_submissions.append(
                 AssessmentSubmission(
@@ -661,7 +660,7 @@ async def list_teacher_assessments(user=Depends(get_current_teacher)):
             TeacherAssessmentResponse(
                 id=aid,
                 phaseId=a.get("phase_id"),
-                phaseTitle=phase_data.get("title") if isinstance(phase_data, dict) else None,
+                phaseTitle=a.get("phase_title"),
                 title=a.get("subject"),
                 subject=a.get("subject"),
                 description=a.get("description"),
@@ -692,10 +691,10 @@ async def ai_grade_assessment(
         raise HTTPException(status_code=404, detail="평가를 찾을 수 없습니다.")
 
     sub_res = (
-        supabase.table("student_assessments")
+        supabase.table("assessment_submissions")
         .select("*")
         .eq("assessment_id", assessment_id)
-        .eq("user_id", student_id)
+        .eq("student_id", student_id)
         .execute()
     )
     if not sub_res.data:
@@ -712,12 +711,13 @@ async def ai_grade_assessment(
     )
 
     pass_score = assessment.get("pass_score", 60)
-    supabase.table("student_assessments").update({
+    sub_record = sub_res.data[0] if isinstance(sub_res.data, list) else sub_res.data
+    supabase.table("assessment_submissions").update({
         "score": ai_result["score"],
         "passed": ai_result["score"] >= pass_score,
         "feedback": ai_result["feedback"],
         "status": "graded",
-    }).eq("id", sub_res.data["id"]).execute()
+    }).eq("id", sub_record["id"]).execute()
 
     return {
         "score": ai_result["score"],
@@ -737,10 +737,10 @@ async def confirm_assessment_grade(
     supabase = get_supabase()
 
     existing = (
-        supabase.table("student_assessments")
+        supabase.table("assessment_submissions")
         .select("id")
         .eq("assessment_id", assessment_id)
-        .eq("user_id", student_id)
+        .eq("student_id", student_id)
         .execute()
     )
     if not existing.data:
@@ -759,8 +759,9 @@ async def confirm_assessment_grade(
             for rs in body.rubricScores
         ]
 
-    supabase.table("student_assessments").update(update_data).eq(
-        "id", existing.data["id"]
+    existing_rec = existing.data[0] if isinstance(existing.data, list) else existing.data
+    supabase.table("assessment_submissions").update(update_data).eq(
+        "id", existing_rec["id"]
     ).execute()
 
     return {"message": "평가 점수가 확정되었습니다."}
@@ -798,7 +799,7 @@ async def list_teacher_problems(
             difficulty=p.get("difficulty"),
             tags=p.get("tags") or [],
             choices=p.get("choices"),
-            correct_answer=p.get("correct_answer"),
+            correct_answer=p.get("answer"),
             concept_id=p.get("concept_id"),
             created_at=p.get("created_at"),
         )
@@ -817,7 +818,7 @@ async def create_problem(body: ProblemCreateRequest, user=Depends(get_current_te
         "type": body.type,
         "difficulty": body.difficulty,
         "tags": body.tags,
-        "correct_answer": body.correct_answer,
+        "answer": body.correct_answer,
     }
     if body.choices:
         payload["choices"] = body.choices
@@ -858,7 +859,7 @@ async def update_problem(
     if body.choices is not None:
         update_data["choices"] = body.choices
     if body.correct_answer is not None:
-        update_data["correct_answer"] = body.correct_answer
+        update_data["answer"] = body.correct_answer
 
     if update_data:
         supabase.table("problems").update(update_data).eq("id", problem_id).execute()
@@ -910,7 +911,7 @@ async def generate_problems_ai(
                 "difficulty": body.difficulty,
                 "tags": p.get("tags", []),
                 "choices": p.get("choices"),
-                "correct_answer": p.get("correct_answer"),
+                "answer": p.get("correct_answer"),
             })
             .execute()
         )
@@ -947,7 +948,7 @@ async def upload_counseling_audio(
     res = (
         supabase.table("counseling_records")
         .insert({
-            "teacher_id": user["id"],
+            "counselor_id": user["id"],
             "student_name": student_name,
             "date": date.today().isoformat(),
             "duration": summary_result.get("duration"),
@@ -976,7 +977,7 @@ async def list_counseling_records(user=Depends(get_current_teacher)):
     res = (
         supabase.table("counseling_records")
         .select("*")
-        .eq("teacher_id", user["id"])
+        .eq("counselor_id", user["id"])
         .order("date", desc=True)
         .execute()
     )
@@ -1011,7 +1012,7 @@ async def list_teacher_questions(
 
     query = (
         supabase.table("questions")
-        .select("*, profiles(name)")
+        .select("*, users(name)")
         .order("created_at", desc=True)
     )
 
@@ -1029,7 +1030,7 @@ async def list_teacher_questions(
             user_id=str(q["user_id"]),
             content=q["content"],
             is_anonymous=q.get("is_anonymous", False),
-            author=None if q.get("is_anonymous") else (q.get("profiles", {}) or {}).get("name"),
+            author=None if q.get("is_anonymous") else (q.get("users", {}) or {}).get("name"),
             created_at=q.get("created_at", ""),
             answer=q.get("answer"),
             answered_at=q.get("answered_at"),
@@ -1069,10 +1070,10 @@ async def answer_question(
 
 
 def _get_all_students(supabase) -> list:
-    """전체 학생 프로필 목록 조회"""
+    """전체 학생 목록 조회"""
     res = (
-        supabase.table("profiles")
-        .select("user_id, name")
+        supabase.table("users")
+        .select("id, name")
         .eq("role", "student")
         .order("name")
         .execute()
@@ -1086,14 +1087,14 @@ def _get_student_files(supabase, user_id: str) -> List[StudentFile]:
         files_res = (
             supabase.table("student_files")
             .select("*")
-            .eq("user_id", user_id)
+            .eq("student_id", user_id)
             .execute()
         )
         return [
             StudentFile(
-                name=f.get("file_name", ""),
-                type=f.get("file_type", ""),
-                url=f.get("file_url", ""),
+                name=f.get("name", ""),
+                type=f.get("type", ""),
+                url=f.get("url", ""),
                 uploaded_at=f.get("uploaded_at", "")[:10] if f.get("uploaded_at") else None,
             )
             for f in (files_res.data or [])

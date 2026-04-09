@@ -1,4 +1,3 @@
-from typing import List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from app.dependencies import get_current_user
 from app.utils.supabase_client import get_supabase
@@ -9,13 +8,13 @@ router = APIRouter(prefix="/api/profile", tags=["profile"])
 
 @router.get("/me", response_model=ProfileResponse)
 def get_my_profile(user=Depends(get_current_user)):
-    """내 프로필 조회 (코호트·멘토 정보 포함)"""
+    """내 프로필 조회"""
     supabase = get_supabase()
 
     res = (
-        supabase.table("profiles")
+        supabase.table("users")
         .select("*")
-        .eq("user_id", user["id"])
+        .eq("id", user["id"])
         .execute()
     )
     if not res.data:
@@ -23,42 +22,15 @@ def get_my_profile(user=Depends(get_current_user)):
 
     p = res.data[0]
 
-    # 코호트 이름 조회
-    cohort_name = None
-    if p.get("cohort_id"):
-        c_res = (
-            supabase.table("cohorts")
-            .select("name")
-            .eq("id", p["cohort_id"])
-            .execute()
-        )
-        if c_res.data:
-            cohort_name = c_res.data[0]["name"]
-
-    # 멘토 이름 조회
-    mentor_name = None
-    if p.get("mentor_id"):
-        m_res = (
-            supabase.table("profiles")
-            .select("name")
-            .eq("user_id", p["mentor_id"])
-            .execute()
-        )
-        if m_res.data:
-            mentor_name = m_res.data[0]["name"]
-
     return ProfileResponse(
-        id=str(p["user_id"]),
-        user_id=str(p["user_id"]),
+        id=str(p["id"]),
         name=p.get("name", ""),
         email=p.get("email") or user.get("email"),
         avatar_url=p.get("avatar_url"),
         role=p.get("role", "student"),
         target_jobs=p.get("target_jobs") or [],
-        cohort_id=str(p["cohort_id"]) if p.get("cohort_id") else None,
-        cohort_name=cohort_name,
-        mentor_id=str(p["mentor_id"]) if p.get("mentor_id") else None,
-        mentor_name=mentor_name,
+        overall_score=p.get("overall_score", 0),
+        tier=p.get("tier", "Beginner"),
     )
 
 
@@ -67,8 +39,8 @@ def update_target_jobs(body: ProfileUpdateTargetJobs, user=Depends(get_current_u
     """목표 직종 업데이트"""
     supabase = get_supabase()
 
-    supabase.table("profiles").update({"target_jobs": body.jobs}).eq(
-        "user_id", user["id"]
+    supabase.table("users").update({"target_jobs": body.jobs}).eq(
+        "id", user["id"]
     ).execute()
     return {"message": "목표 직종이 업데이트되었습니다.", "jobs": body.jobs}
 
@@ -78,7 +50,6 @@ async def upload_avatar(file: UploadFile = File(...), user=Depends(get_current_u
     """프로필 아바타 이미지 업로드"""
     supabase = get_supabase()
 
-    # 이미지 파일 유효성 검사
     if file.content_type not in ("image/jpeg", "image/png", "image/webp", "image/gif"):
         raise HTTPException(status_code=400, detail="지원하지 않는 이미지 형식입니다.")
 
@@ -89,33 +60,35 @@ async def upload_avatar(file: UploadFile = File(...), user=Depends(get_current_u
     supabase.storage.from_("uploads").upload(
         path, contents, {"content-type": file.content_type, "upsert": "true"}
     )
-    # public URL 가져오기
     url_res = supabase.storage.from_("uploads").get_public_url(path)
     avatar_url = url_res if isinstance(url_res, str) else url_res.get("publicUrl", "")
 
-    supabase.table("profiles").update({"avatar_url": avatar_url}).eq("user_id", user["id"]).execute()
+    supabase.table("users").update({"avatar_url": avatar_url}).eq("id", user["id"]).execute()
     return {"avatar_url": avatar_url}
 
 
-@router.get("/skill-scores", response_model=List[SkillScoreResponse])
+@router.get("/skill-scores", response_model=SkillScoreResponse)
 def get_skill_scores(user=Depends(get_current_user)):
-    """레이더 차트용 스킬 점수 조회"""
+    """레이더 차트용 스킬 점수 조회 (5축)"""
     supabase = get_supabase()
 
     res = (
         supabase.table("skill_scores")
-        .select("category, score")
+        .select("*")
         .eq("user_id", user["id"])
         .execute()
     )
-    scores = res.data or []
+    if not res.data:
+        return SkillScoreResponse()
 
-    return [
-        SkillScoreResponse(
-            subject=s["category"],
-            score=s.get("score", 0),
-            fullMark=100,
-        )
-        for s in scores
-    ]
+    s = res.data[0]
+    return SkillScoreResponse(
+        attendance=s.get("attendance", 0),
+        ai_speaking=s.get("ai_speaking", 0),
+        ai_interview=s.get("ai_interview", 0),
+        portfolio=s.get("portfolio", 0),
+        project_assignment_exam=s.get("project_assignment_exam", 0),
+        overall_score=s.get("overall_score", 0),
+        tier=s.get("tier", "Beginner"),
+    )
 

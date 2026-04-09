@@ -3,13 +3,14 @@ from typing import List, Optional
 
 
 class SubmissionResponse(BaseModel):
-    id: str
-    problem_id: int
-    answer: Optional[str]
+    id: int
+    problem_id: str
+    selected_answer: Optional[int]
+    answer_content: Optional[str]
     is_correct: Optional[bool]
     score: Optional[int]
     feedback: Optional[str]
-    submitted_at: str
+    submitted_at: Optional[str]
 
 
 class QuizSubmitRequest(BaseModel):
@@ -18,7 +19,6 @@ class QuizSubmitRequest(BaseModel):
 
 
 class QuizResultResponse(BaseModel):
-    id: str
     concept_id: str
     total_problems: int
     correct_count: int

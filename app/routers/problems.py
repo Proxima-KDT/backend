@@ -44,8 +44,8 @@ def get_problems(
         result.append(
             ProblemResponse(
                 id=p["id"],
-                title=p["title"],
-                description=p.get("description"),
+                title=p.get("title"),
+                question=p.get("question"),
                 type=p["type"],
                 difficulty=p.get("difficulty"),
                 tags=p.get("tags") or [],
@@ -53,14 +53,14 @@ def get_problems(
                 submitted=sub is not None,
                 score=sub["score"] if sub else None,
                 choices=p.get("choices"),
-                correct_answer=None,  # 정답 노출 금지
+                answer=None,
             )
         )
     return result
 
 
 @router.get("/{problem_id}", response_model=ProblemResponse)
-def get_problem(problem_id: int, user=Depends(get_current_user)):
+def get_problem(problem_id: str, user=Depends(get_current_user)):
     """문제 상세 조회"""
     supabase = get_supabase()
 
@@ -75,10 +75,9 @@ def get_problem(problem_id: int, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="문제를 찾을 수 없습니다.")
     p = problem_res.data
 
-    # 사용자 제출 기록 확인
     sub_res = (
         supabase.table("submissions")
-        .select("score, is_correct, answer")
+        .select("score, is_correct, selected_answer")
         .eq("user_id", user["id"])
         .eq("problem_id", problem_id)
         .order("submitted_at", desc=True)
@@ -89,8 +88,8 @@ def get_problem(problem_id: int, user=Depends(get_current_user)):
 
     return ProblemResponse(
         id=p["id"],
-        title=p["title"],
-        description=p.get("description"),
+        title=p.get("title"),
+        question=p.get("question"),
         type=p["type"],
         difficulty=p.get("difficulty"),
         tags=p.get("tags") or [],
@@ -98,13 +97,13 @@ def get_problem(problem_id: int, user=Depends(get_current_user)):
         submitted=sub is not None,
         score=sub["score"] if sub else None,
         choices=p.get("choices"),
-        correct_answer=sub["answer"] if (sub and p["type"] == "multiple_choice") else None,
+        answer=p.get("answer") if sub else None,
     )
 
 
 @router.post("/{problem_id}/submit", response_model=ProblemEvaluationResponse)
 async def submit_problem(
-    problem_id: int,
+    problem_id: str,
     body: ProblemSubmitRequest,
     user=Depends(get_current_user),
 ):
@@ -122,7 +121,6 @@ async def submit_problem(
         raise HTTPException(status_code=404, detail="문제를 찾을 수 없습니다.")
     p = problem_res.data
 
-    # 이미 제출한 경우 재제출 방지
     existing_res = (
         supabase.table("submissions")
         .select("id")
@@ -138,7 +136,7 @@ async def submit_problem(
     feedback: Optional[str] = None
 
     if p["type"] == "multiple_choice":
-        correct = str(p.get("correct_answer", ""))
+        correct = str(p.get("answer", ""))
         is_correct = body.answer.strip() == correct.strip()
         score = 100 if is_correct else 0
         feedback = "정답입니다!" if is_correct else "오답입니다. 다시 풀어보세요."
@@ -146,8 +144,8 @@ async def submit_problem(
     elif p["type"] in ("short_answer", "code"):
         grading = await ai_service.grade_answer(
             problem_type=p["type"],
-            title=p["title"],
-            description=p.get("description", ""),
+            title=p.get("title", ""),
+            description=p.get("question", ""),
             user_answer=body.answer,
         )
         is_correct = grading["is_correct"]
@@ -157,12 +155,12 @@ async def submit_problem(
         score = 0
         feedback = "채점을 완료했습니다."
 
-    # 제출 기록 저장
     supabase.table("submissions").insert(
         {
             "problem_id": problem_id,
             "user_id": user["id"],
-            "answer": body.answer,
+            "selected_answer": int(body.answer) if body.answer.isdigit() else None,
+            "answer_content": body.answer,
             "is_correct": is_correct,
             "score": score,
             "feedback": feedback,
@@ -177,7 +175,7 @@ async def submit_problem(
 
 
 @router.get("/{problem_id}/evaluation", response_model=ProblemEvaluationResponse)
-async def get_problem_evaluation(problem_id: int, user=Depends(get_current_user)):
+async def get_problem_evaluation(problem_id: str, user=Depends(get_current_user)):
     """제출한 문제의 채점 결과 조회"""
     supabase = get_supabase()
 

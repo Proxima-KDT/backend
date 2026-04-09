@@ -35,7 +35,7 @@ def list_admin_students(
     """관리자 학생 목록 (검색 지원) — N+1 방지: 배치 쿼리"""
     supabase = get_supabase()
 
-    query = supabase.table("profiles").select("*").eq("role", "student").order("name")
+    query = supabase.table("users").select("*").eq("role", "student").order("name")
     if search:
         query = query.or_(f"name.ilike.%{search}%,email.ilike.%{search}%")
     profiles_res = query.execute()
@@ -44,25 +44,25 @@ def list_admin_students(
     if not students:
         return []
 
-    student_ids = [s.get("user_id") or s.get("id") for s in students]
+    student_ids = [s["id"] for s in students]
 
     # 배치 쿼리 — 학생 수에 관계없이 쿼리 3개로 고정
     att_res = (
-        supabase.table("attendance_records")
+        supabase.table("attendance")
         .select("user_id, status")
         .in_("user_id", student_ids)
         .execute()
     )
     skills_res = (
         supabase.table("skill_scores")
-        .select("user_id, category, score")
+        .select("user_id, attendance, ai_speaking, ai_interview, portfolio, project_assignment_exam")
         .in_("user_id", student_ids)
         .execute()
     )
     files_res = (
         supabase.table("student_files")
-        .select("user_id, file_name, file_type, file_url, uploaded_at")
-        .in_("user_id", student_ids)
+        .select("student_id, name, type, url, uploaded_at")
+        .in_("student_id", student_ids)
         .execute()
     )
 
@@ -73,23 +73,29 @@ def list_admin_students(
 
     skills_by_user: dict = {}
     for sk in (skills_res.data or []):
-        skills_by_user.setdefault(sk["user_id"], {})[sk["category"]] = sk["score"]
+        skills_by_user[sk["user_id"]] = {
+            "출결": sk.get("attendance", 0),
+            "AI_말하기": sk.get("ai_speaking", 0),
+            "AI_면접": sk.get("ai_interview", 0),
+            "포트폴리오": sk.get("portfolio", 0),
+            "프로젝트_과제_시험": sk.get("project_assignment_exam", 0),
+        }
 
     files_by_user: dict = {}
     for f in (files_res.data or []):
-        files_by_user.setdefault(f["user_id"], []).append({
-            "name": f.get("file_name", ""),
-            "type": f.get("file_type", ""),
-            "url": f.get("file_url", ""),
+        files_by_user.setdefault(f["student_id"], []).append({
+            "name": f.get("name", ""),
+            "type": f.get("type", ""),
+            "url": f.get("url", ""),
             "uploaded_at": f.get("uploaded_at", "")[:10] if f.get("uploaded_at") else None,
         })
 
     result = []
     for s in students:
-        uid = s.get("user_id") or s.get("id")
+        uid = s["id"]
         records = att_by_user.get(uid, [])
         total_att = len(records)
-        attended = sum(1 for r in records if r in ("present", "late", "early_leave"))
+        attended = sum(1 for r in records if r in ("present", "late"))
         att_rate = round((attended / total_att) * 100, 1) if total_att > 0 else 0
 
         result.append(
@@ -117,35 +123,42 @@ def get_admin_student_detail(student_id: str, user=Depends(get_current_admin)):
     supabase = get_supabase()
 
     profile_res = (
-        supabase.table("profiles")
+        supabase.table("users")
         .select("*")
-        .eq("user_id", student_id)
+        .eq("id", student_id)
         .execute()
     )
     if not profile_res.data:
         raise HTTPException(status_code=404, detail="학생을 찾을 수 없습니다.")
 
-    s = profile_res.data
-    uid = s.get("user_id") or s.get("id")
+    s = profile_res.data[0] if isinstance(profile_res.data, list) else profile_res.data
+    uid = s["id"]
 
     att_res = (
-        supabase.table("attendance_records")
+        supabase.table("attendance")
         .select("status")
         .eq("user_id", uid)
         .execute()
     )
     att_records = att_res.data or []
     total_att = len(att_records)
-    attended = sum(1 for a in att_records if a.get("status") in ("present", "late", "early_leave"))
+    attended = sum(1 for a in att_records if a.get("status") in ("present", "late"))
     att_rate = round((attended / total_att) * 100, 1) if total_att > 0 else 0
 
     skills_res = (
         supabase.table("skill_scores")
-        .select("category, score")
+        .select("attendance, ai_speaking, ai_interview, portfolio, project_assignment_exam")
         .eq("user_id", uid)
         .execute()
     )
-    skills = {sk["category"]: sk["score"] for sk in (skills_res.data or [])}
+    sk = skills_res.data[0] if skills_res.data else {}
+    skills = {
+        "출결": sk.get("attendance", 0),
+        "AI_말하기": sk.get("ai_speaking", 0),
+        "AI_면접": sk.get("ai_interview", 0),
+        "포트폴리오": sk.get("portfolio", 0),
+        "프로젝트_과제_시험": sk.get("project_assignment_exam", 0),
+    }
 
     files = _get_student_files(supabase, uid)
 
@@ -178,7 +191,7 @@ def get_admin_student_weekly_attendance(
     monday = base_date - timedelta(days=base_date.weekday())
 
     res = (
-        supabase.table("attendance_records")
+        supabase.table("attendance")
         .select("date, status, check_in_time")
         .eq("user_id", student_id)
         .gte("date", monday.isoformat())
@@ -206,28 +219,21 @@ def save_admin_student_notes(
     body: dict,
     user=Depends(get_current_admin),
 ):
-    """학생 상담 메모 저장 (관리자)"""
+    """학생 상담 메모 저장 (관리자) — counseling_records에 저장"""
     supabase = get_supabase()
     notes = body.get("notes", "")
 
-    existing = (
-        supabase.table("counseling_notes")
-        .select("id")
-        .eq("student_id", student_id)
-        .eq("teacher_id", user["id"])
-        .execute()
-    )
+    # 학생 이름 조회
+    student_res = supabase.table("users").select("name").eq("id", student_id).execute()
+    student_name = student_res.data[0]["name"] if student_res.data else ""
 
-    if existing.data:
-        supabase.table("counseling_notes").update(
-            {"notes": notes, "updated_at": datetime.now().isoformat()}
-        ).eq("id", existing.data["id"]).execute()
-    else:
-        supabase.table("counseling_notes").insert({
-            "student_id": student_id,
-            "teacher_id": user["id"],
-            "notes": notes,
-        }).execute()
+    supabase.table("counseling_records").insert({
+        "student_id": student_id,
+        "student_name": student_name,
+        "counselor_id": user["id"],
+        "date": date.today().isoformat(),
+        "summary": notes,
+    }).execute()
 
     return {"message": "상담 메모가 저장되었습니다."}
 
@@ -253,7 +259,7 @@ def list_admin_users(
     """전체 사용자 목록 (검색 지원)"""
     supabase = get_supabase()
 
-    query = supabase.table("profiles").select("*").order("name")
+    query = supabase.table("users").select("*").order("name")
 
     if search:
         query = query.or_(f"name.ilike.%{search}%,email.ilike.%{search}%")
@@ -263,7 +269,7 @@ def list_admin_users(
 
     return [
         {
-            "id": u.get("user_id") or u.get("id"),
+            "id": u["id"],
             "name": u.get("name", ""),
             "email": u.get("email"),
             "role": u.get("role", "student"),
@@ -285,17 +291,17 @@ def update_user_role(
         raise HTTPException(status_code=400, detail="유효하지 않은 역할입니다.")
 
     existing = (
-        supabase.table("profiles")
-        .select("id, user_id")
-        .eq("user_id", user_id)
+        supabase.table("users")
+        .select("id")
+        .eq("id", user_id)
         .execute()
     )
     if not existing.data:
         raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다.")
 
-    supabase.table("profiles").update(
+    supabase.table("users").update(
         {"role": body.new_role}
-    ).eq("user_id", user_id).execute()
+    ).eq("id", user_id).execute()
 
     return {"message": f"역할이 {body.new_role}(으)로 변경되었습니다."}
 
@@ -324,12 +330,12 @@ def list_admin_equipment(
         AdminEquipmentResponse(
             id=str(item["id"]),
             name=item["name"],
-            serial=item["serial"],
+            serial_no=item["serial_no"],
             category=item.get("category"),
             status=item["status"],
             borrower=item.get("borrower_name"),
             borrower_id=str(item["borrower_id"]) if item.get("borrower_id") else None,
-            borrowed_date=item.get("borrowed_date"),
+            borrowed_at=item.get("borrowed_at"),
         )
         for item in items
     ]
@@ -341,8 +347,8 @@ def get_equipment_history(equipment_id: str, user=Depends(get_current_admin)):
     supabase = get_supabase()
 
     res = (
-        supabase.table("equipment_requests")
-        .select("*, profiles!equipment_requests_user_id_fkey(name)")
+        supabase.table("equipment_logs")
+        .select("*, users!equipment_logs_user_id_fkey(name)")
         .eq("equipment_id", equipment_id)
         .order("created_at", desc=True)
         .execute()
@@ -353,9 +359,9 @@ def get_equipment_history(equipment_id: str, user=Depends(get_current_admin)):
         EquipmentHistoryItem(
             id=str(h["id"]),
             date=h.get("created_at", "")[:10] if h.get("created_at") else None,
-            action=h.get("request_type", h.get("status")),
-            user_name=(h.get("profiles") or {}).get("name") if isinstance(h.get("profiles"), dict) else None,
-            note=h.get("reason"),
+            action=h.get("action"),
+            user_name=(h.get("users") or {}).get("name") if isinstance(h.get("users"), dict) else None,
+            note=h.get("note"),
         )
         for h in history
     ]
@@ -370,7 +376,7 @@ def create_equipment(body: EquipmentCreateRequest, user=Depends(get_current_admi
         supabase.table("equipment")
         .insert({
             "name": body.name,
-            "serial": body.serial,
+            "serial_no": body.serial_no,
             "category": body.category,
             "status": "available",
         })
@@ -389,7 +395,7 @@ def list_equipment_requests(
 
     query = (
         supabase.table("equipment_requests")
-        .select("*, equipment(name), profiles!equipment_requests_user_id_fkey(name)")
+        .select("*")
         .order("created_at", desc=True)
     )
     if status and status != "all":
@@ -401,8 +407,8 @@ def list_equipment_requests(
     return [
         EquipmentRequestResponse(
             id=str(r["id"]),
-            student_name=(r.get("profiles") or {}).get("name") if isinstance(r.get("profiles"), dict) else None,
-            equipment_name=(r.get("equipment") or {}).get("name") if isinstance(r.get("equipment"), dict) else None,
+            student_name=r.get("student_name"),
+            equipment_name=r.get("equipment_name"),
             request_date=r.get("created_at", "")[:10] if r.get("created_at") else None,
             reason=r.get("reason"),
             status=r.get("status", "pending"),
@@ -424,24 +430,25 @@ def approve_equipment_request(request_id: str, user=Depends(get_current_admin)):
     )
     if not req_res.data:
         raise HTTPException(status_code=404, detail="요청을 찾을 수 없습니다.")
-    if req_res.data["status"] != "pending":
+
+    req = req_res.data[0] if isinstance(req_res.data, list) else req_res.data
+    if req["status"] != "pending":
         raise HTTPException(status_code=409, detail="이미 처리된 요청입니다.")
 
-    req = req_res.data
     equipment_id = req["equipment_id"]
 
-    # 프로필에서 이름 가져오기
-    profile_res = (
-        supabase.table("profiles")
+    # 사용자 이름 가져오기
+    user_res = (
+        supabase.table("users")
         .select("name")
-        .eq("user_id", req["user_id"])
+        .eq("id", req["user_id"])
         .execute()
     )
-    borrower_name = profile_res.data["name"] if profile_res.data else ""
+    borrower_name = user_res.data[0]["name"] if user_res.data else ""
 
     # 요청 승인
     supabase.table("equipment_requests").update(
-        {"status": "approved"}
+        {"status": "approved", "decided_by": user["id"]}
     ).eq("id", request_id).execute()
 
     # 장비 상태 업데이트
@@ -449,7 +456,7 @@ def approve_equipment_request(request_id: str, user=Depends(get_current_admin)):
         "status": "borrowed",
         "borrower_id": req["user_id"],
         "borrower_name": borrower_name,
-        "borrowed_date": date.today().isoformat(),
+        "borrowed_at": date.today().isoformat(),
     }).eq("id", equipment_id).execute()
 
     return {"message": "대여 요청이 승인되었습니다."}
@@ -470,12 +477,15 @@ def reject_equipment_request(
     )
     if not req_res.data:
         raise HTTPException(status_code=404, detail="요청을 찾을 수 없습니다.")
-    if req_res.data["status"] != "pending":
+
+    req = req_res.data[0] if isinstance(req_res.data, list) else req_res.data
+    if req["status"] != "pending":
         raise HTTPException(status_code=409, detail="이미 처리된 요청입니다.")
 
     supabase.table("equipment_requests").update({
         "status": "rejected",
-        "reason": body.reason,
+        "reject_reason": body.reason,
+        "decided_by": user["id"],
     }).eq("id", request_id).execute()
 
     return {"message": "대여 요청이 반려되었습니다."}
@@ -502,7 +512,7 @@ def update_equipment_status(
     if body.status == "available":
         update_data["borrower_id"] = None
         update_data["borrower_name"] = None
-        update_data["borrowed_date"] = None
+        update_data["borrowed_at"] = None
 
     supabase.table("equipment").update(update_data).eq("id", equipment_id).execute()
 
@@ -546,7 +556,7 @@ def get_admin_room_slots(
 
     res = (
         supabase.table("room_reservations")
-        .select("*, profiles!room_reservations_user_id_fkey(name)")
+        .select("*, users!room_reservations_user_id_fkey(name)")
         .eq("date", date_str)
         .neq("status", "cancelled")
         .order("start_time")
@@ -561,7 +571,7 @@ def get_admin_room_slots(
             date=s["date"],
             start_time=s["start_time"],
             end_time=s["end_time"],
-            reserved_by=(s.get("profiles") or {}).get("name") if isinstance(s.get("profiles"), dict) else None,
+            reserved_by=(s.get("users") or {}).get("name") if isinstance(s.get("users"), dict) else None,
             purpose=s.get("purpose"),
             user_id=str(s.get("user_id", "")),
         )
@@ -583,7 +593,6 @@ def create_room(body: RoomCreateRequest, user=Depends(get_current_admin)):
             "floor": body.floor,
             "amenities": body.amenities,
             "status": "open",
-            "is_active": True,
         })
         .execute()
     )
@@ -674,20 +683,20 @@ def force_cancel_reservation(reservation_id: str, user=Depends(get_current_admin
 # ═══════════════════════════════════════════════════
 
 
-def _get_student_files(supabase, user_id: str) -> list:
+def _get_student_files(supabase, student_id: str) -> list:
     """학생 파일 목록 조회"""
     try:
         files_res = (
             supabase.table("student_files")
             .select("*")
-            .eq("user_id", user_id)
+            .eq("student_id", student_id)
             .execute()
         )
         return [
             {
-                "name": f.get("file_name", ""),
-                "type": f.get("file_type", ""),
-                "url": f.get("file_url", ""),
+                "name": f.get("name", ""),
+                "type": f.get("type", ""),
+                "url": f.get("url", ""),
                 "uploaded_at": f.get("uploaded_at", "")[:10] if f.get("uploaded_at") else None,
             }
             for f in (files_res.data or [])

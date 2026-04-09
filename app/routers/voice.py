@@ -64,21 +64,18 @@ async def analyze_voice(body: VoiceAnalyzeRequest, user=Depends(get_current_user
     missing = sum(1 for k in keyword_results if k.get("status") == "missing")
 
     # DB 저장
-    from datetime import datetime
-
-    now = datetime.now()
-    supabase.table("voice_feedback_sessions").insert(
+    supabase.table("voice_feedbacks").insert(
         {
             "user_id": user["id"],
             "topic": body.topic,
             "transcript": body.transcript,
             "score": analysis.get("score", 0),
             "feedback": analysis.get("feedback", ""),
-            "keyword_results": keyword_results,
+            "keywords": keyword_results,
+            "total_keywords": len(keyword_results),
             "correct_count": correct,
             "inaccurate_count": inaccurate,
             "missing_count": missing,
-            "recorded_at": now.isoformat(),
         }
     ).execute()
 
@@ -99,10 +96,10 @@ async def get_voice_history(user=Depends(get_current_user)):
     supabase = get_supabase()
 
     res = (
-        supabase.table("voice_feedback_sessions")
+        supabase.table("voice_feedbacks")
         .select("*")
         .eq("user_id", user["id"])
-        .order("recorded_at", desc=True)
+        .order("created_at", desc=True)
         .limit(20)
         .execute()
     )
@@ -111,11 +108,11 @@ async def get_voice_history(user=Depends(get_current_user)):
     result = []
     for s in sessions:
         # 날짜/시간 파싱
-        recorded_at = s.get("recorded_at", "")
-        date_part = recorded_at[:10] if recorded_at else ""
-        time_part = recorded_at[11:16] if len(recorded_at) > 10 else ""
+        created_at = s.get("created_at", "")
+        date_part = created_at[:10] if created_at else ""
+        time_part = created_at[11:16] if len(created_at) > 10 else ""
 
-        kw_results = s.get("keyword_results") or []
+        kw_results = s.get("keywords") or []
         result.append(
             VoiceHistoryResponse(
                 id=str(s["id"]),

@@ -29,18 +29,17 @@ def list_jobs(
     """채용 공고 목록 조회 (매칭 점수 포함, 내림차순 정렬)"""
     supabase = get_supabase()
 
-    # 학생의 기술 스택 조회 (skill_scores 기반)
-    skills_res = (
-        supabase.table("skill_scores")
-        .select("skill_name")
-        .eq("user_id", user["id"])
-        .gt("score", 0)
+    # 학생의 관심 직무 조회 (users.target_jobs 기반)
+    user_res = (
+        supabase.table("users")
+        .select("target_jobs")
+        .eq("id", user["id"])
         .execute()
     )
-    user_skills = [s["skill_name"] for s in (skills_res.data or [])]
+    user_skills = (user_res.data[0].get("target_jobs") or []) if user_res.data else []
 
     # 채용 공고 조회
-    query = supabase.table("jobs").select("*").eq("is_active", True)
+    query = supabase.table("jobs").select("*")
     jobs_res = query.execute()
     jobs = jobs_res.data or []
 

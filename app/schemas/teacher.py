@@ -66,7 +66,7 @@ class DailyAttendanceRecord(BaseModel):
 
 
 class AttendanceStatusUpdate(BaseModel):
-    status: str  # present, late, absent, early_leave
+    status: str  # present, late, absent
 
 
 # ── 과제 관리 ──────────────────────────────────────
@@ -169,14 +169,14 @@ class AssessmentGradeRequest(BaseModel):
 # ── 문제 관리 ──────────────────────────────────────
 
 class ProblemResponse(BaseModel):
-    id: int
+    id: str
     title: str
     description: Optional[str] = None
     type: str
     difficulty: Optional[str] = None
     tags: List[str] = []
     choices: Optional[list] = None
-    correct_answer: Optional[str] = None
+    correct_answer: Optional[int] = None
     concept_id: Optional[str] = None
     created_at: Optional[str] = None
 

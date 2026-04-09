@@ -23,15 +23,15 @@ def get_subjects(_user=Depends(get_current_user)):
 
     concepts_res = (
         supabase.table("concepts")
-        .select("id, subject_id, title, description, order_index")
-        .order("order_index")
+        .select("id, subject_id, title, description, order")
+        .order("order")
         .execute()
     )
     concepts = concepts_res.data or []
 
     # 과목별 문제 수 조회
     quiz_res = (
-        supabase.table("concept_quiz_problems")
+        supabase.table("problems")
         .select("id, concept_id")
         .execute()
     )
@@ -39,8 +39,9 @@ def get_subjects(_user=Depends(get_current_user)):
 
     problems_count_by_concept: dict = {}
     for qp in quiz_problems:
-        cid = qp["concept_id"]
-        problems_count_by_concept[cid] = problems_count_by_concept.get(cid, 0) + 1
+        cid = qp.get("concept_id")
+        if cid:
+            problems_count_by_concept[cid] = problems_count_by_concept.get(cid, 0) + 1
 
     concepts_by_subject: dict = {}
     for concept in concepts:
@@ -66,7 +67,7 @@ def get_subjects(_user=Depends(get_current_user)):
                 description=subject.get("description"),
                 icon=subject.get("icon"),
                 color=subject.get("color"),
-                phase_id=subject.get("phase_id"),
+                phase=subject.get("phase"),
                 concepts=subject_concepts,
             )
         )
@@ -91,9 +92,9 @@ def get_subject_detail(subject_id: str, _user=Depends(get_current_user)):
 
     concepts_res = (
         supabase.table("concepts")
-        .select("id, subject_id, title, description, order_index")
+        .select("id, subject_id, title, description, order")
         .eq("subject_id", subject_id)
-        .order("order_index")
+        .order("order")
         .execute()
     )
     concepts = concepts_res.data or []
@@ -102,7 +103,7 @@ def get_subject_detail(subject_id: str, _user=Depends(get_current_user)):
     quiz_count_by_concept: dict = {}
     if concept_ids:
         quiz_res = (
-            supabase.table("concept_quiz_problems")
+            supabase.table("problems")
             .select("id, concept_id")
             .in_("concept_id", concept_ids)
             .execute()
@@ -127,7 +128,7 @@ def get_subject_detail(subject_id: str, _user=Depends(get_current_user)):
         description=subject.get("description"),
         icon=subject.get("icon"),
         color=subject.get("color"),
-        phase_id=subject.get("phase_id"),
+        phase=subject.get("phase"),
         concepts=subject_concepts,
     )
 
@@ -137,7 +138,6 @@ def get_subject_progress(subject_id: str, user=Depends(get_current_user)):
     """학생의 과목별 학습 진행률 조회"""
     supabase = get_supabase()
 
-    # 과목 존재 확인
     subject_res = (
         supabase.table("subjects")
         .select("id")
@@ -148,38 +148,26 @@ def get_subject_progress(subject_id: str, user=Depends(get_current_user)):
     if not subject_res.data:
         raise HTTPException(status_code=404, detail="과목을 찾을 수 없습니다.")
 
-    # 과목 내 전체 개념 ID 조회
-    concepts_res = (
-        supabase.table("concepts")
+    # 과목의 전체 문제 조회
+    problems_res = (
+        supabase.table("problems")
         .select("id")
         .eq("subject_id", subject_id)
         .execute()
     )
-    concept_ids = [c["id"] for c in (concepts_res.data or [])]
+    problem_ids = [p["id"] for p in (problems_res.data or [])]
+    total_problems = len(problem_ids)
 
-    total_problems = 0
     solved_problems = 0
-
-    if concept_ids:
-        quiz_res = (
-            supabase.table("concept_quiz_problems")
-            .select("id, concept_id")
-            .in_("concept_id", concept_ids)
-            .execute()
-        )
-        total_problems = len(quiz_res.data or [])
-
-        # 사용자의 퀴즈 세션에서 맞힌 총 문제 수 집계
-        sessions_res = (
-            supabase.table("quiz_sessions")
-            .select("correct_count")
+    if problem_ids:
+        subs_res = (
+            supabase.table("submissions")
+            .select("problem_id")
             .eq("user_id", user["id"])
-            .in_("concept_id", concept_ids)
+            .in_("problem_id", problem_ids)
             .execute()
         )
-        solved_problems = sum(s["correct_count"] for s in (sessions_res.data or []))
-        # 최대값을 total_problems로 제한
-        solved_problems = min(solved_problems, total_problems)
+        solved_problems = len(set(s["problem_id"] for s in (subs_res.data or [])))
 
     progress = int((solved_problems / total_problems * 100)) if total_problems > 0 else 0
 
@@ -197,29 +185,18 @@ def get_concept_quiz_problems(
     concept_id: str,
     _user=Depends(get_current_user),
 ):
-    """개념별 퀴즈 문제 목록 반환 (정답은 제외)"""
+    """개념별 퀴즈 문제 목록 반환"""
     supabase = get_supabase()
 
-    # comprehensive 요청 시 해당 과목 전체 문제 반환 (최대 10개)
     if concept_id == "comprehensive":
-        concepts_res = (
-            supabase.table("concepts")
-            .select("id")
-            .eq("subject_id", subject_id)
-            .execute()
-        )
-        concept_ids = [c["id"] for c in (concepts_res.data or [])]
-        if not concept_ids:
-            return []
         quiz_res = (
-            supabase.table("concept_quiz_problems")
-            .select("id, question, choices, answer, explanation, order_index")
-            .in_("concept_id", concept_ids)
+            supabase.table("problems")
+            .select("id, question, choices, answer, explanation")
+            .eq("subject_id", subject_id)
             .limit(10)
             .execute()
         )
     else:
-        # 개념 존재 확인
         concept_res = (
             supabase.table("concepts")
             .select("id")
@@ -232,10 +209,9 @@ def get_concept_quiz_problems(
             raise HTTPException(status_code=404, detail="개념을 찾을 수 없습니다.")
 
         quiz_res = (
-            supabase.table("concept_quiz_problems")
-            .select("id, question, choices, answer, explanation, order_index")
+            supabase.table("problems")
+            .select("id, question, choices, answer, explanation")
             .eq("concept_id", concept_id)
-            .order("order_index")
             .execute()
         )
 
@@ -245,7 +221,7 @@ def get_concept_quiz_problems(
             QuizProblemResponse(
                 id=p["id"],
                 question=p["question"],
-                choices=p["choices"],
+                choices=p.get("choices") or [],
                 answer=p.get("answer"),
                 explanation=p.get("explanation"),
             )

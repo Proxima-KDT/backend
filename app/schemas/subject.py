@@ -30,7 +30,7 @@ class SubjectResponse(BaseModel):
     description: Optional[str]
     icon: Optional[str]
     color: Optional[str]
-    phase_id: Optional[int]
+    phase: Optional[int]
     concepts: List[ConceptResponse] = []
 
 

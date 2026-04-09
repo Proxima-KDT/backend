@@ -3,14 +3,14 @@ from typing import Optional
 
 
 class EquipmentResponse(BaseModel):
-    id: str
+    id: int
     name: str
-    serial: str
+    serial_no: str
     category: str
     status: str
-    borrower: Optional[str] = None
+    borrower_name: Optional[str] = None
     borrower_id: Optional[str] = None
-    borrowed_date: Optional[str] = None
+    borrowed_at: Optional[str] = None
 
 
 class EquipmentBorrowRequest(BaseModel):
@@ -18,6 +18,6 @@ class EquipmentBorrowRequest(BaseModel):
 
 
 class EquipmentActionResponse(BaseModel):
-    id: str
+    id: int
     status: str
     message: str

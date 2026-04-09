@@ -27,9 +27,7 @@ from app.routers import (
     rooms,
     profile,
     skills,
-    cohorts,
 )
-from app.routers.submissions import quiz_router
 
 settings = get_settings()
 
@@ -56,7 +54,6 @@ app.include_router(curriculum.router)
 app.include_router(subjects.router)
 app.include_router(problems.router)
 app.include_router(submissions.router)
-app.include_router(quiz_router)
 app.include_router(assessments.router)
 app.include_router(assignments.router)
 app.include_router(attendance.router)
@@ -71,7 +68,6 @@ app.include_router(skills.router)
 app.include_router(teacher.router)
 app.include_router(admin.router)
 app.include_router(counseling_manage.router)
-app.include_router(cohorts.router)
 
 
 @app.get("/")

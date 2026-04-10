@@ -125,8 +125,9 @@ async def submit_assessment(
 
     if existing_res.data:
         existing = existing_res.data[0] if isinstance(existing_res.data, list) else existing_res.data
-        if existing["status"] not in ("resubmit_required", "open", "pending", "locked"):
-            raise HTTPException(status_code=409, detail="이미 제출된 평가입니다.")
+        # graded(채점완료) 상태는 재제출 불가. submitted는 마감 전 파일 교체 허용
+        if existing["status"] == "graded":
+            raise HTTPException(status_code=409, detail="이미 채점이 완료된 평가는 재제출할 수 없습니다.")
         supabase.table("assessment_submissions").update(
             {"status": "submitted", "files": uploaded_files, "submitted_at": now_str}
         ).eq("id", existing["id"]).execute()

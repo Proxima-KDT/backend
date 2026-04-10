@@ -47,5 +47,20 @@ class InterviewHistoryItem(BaseModel):
     company: str
     position: str
     interview_type: str
-    date: str
     score: int
+    categories: Optional[List] = None
+    created_at: str
+
+
+class InterviewHistoryDetail(BaseModel):
+    id: str
+    company: str
+    position: str
+    interview_type: str
+    score: int
+    categories: Optional[List] = None
+    summary: Optional[str] = None
+    improvements: List[str] = []
+    questions: List[str] = []
+    answers: List[str] = []
+    created_at: str

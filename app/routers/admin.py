@@ -46,40 +46,16 @@ def list_admin_students(
 
     student_ids = [s["id"] for s in students]
 
-    # 배치 쿼리 — 학생 수에 관계없이 쿼리 3개로 고정
-    att_res = (
-        supabase.table("attendance")
-        .select("user_id, status")
-        .in_("user_id", student_ids)
-        .execute()
-    )
-    skills_res = (
-        supabase.table("skill_scores")
-        .select("user_id, attendance, ai_speaking, ai_interview, portfolio, project_assignment_exam")
-        .in_("user_id", student_ids)
-        .execute()
-    )
+    # 스킬 동적 계산 (teacher와 동일 로직)
+    from app.services.skill_service import calculate_students_skills_batch
+    skills_by_user = calculate_students_skills_batch(supabase, student_ids)
+
     files_res = (
         supabase.table("student_files")
         .select("student_id, name, type, url, uploaded_at")
         .in_("student_id", student_ids)
         .execute()
     )
-
-    # 메모리에서 집계
-    att_by_user: dict = {}
-    for a in (att_res.data or []):
-        att_by_user.setdefault(a["user_id"], []).append(a["status"])
-
-    skills_by_user: dict = {}
-    for sk in (skills_res.data or []):
-        skills_by_user[sk["user_id"]] = {
-            "출결": sk.get("attendance", 0),
-            "AI_말하기": sk.get("ai_speaking", 0),
-            "AI_면접": sk.get("ai_interview", 0),
-            "포트폴리오": sk.get("portfolio", 0),
-            "프로젝트_과제_시험": sk.get("project_assignment_exam", 0),
-        }
 
     files_by_user: dict = {}
     for f in (files_res.data or []):
@@ -93,10 +69,7 @@ def list_admin_students(
     result = []
     for s in students:
         uid = s["id"]
-        records = att_by_user.get(uid, [])
-        total_att = len(records)
-        attended = sum(1 for r in records if r in ("present", "late"))
-        att_rate = round((attended / total_att) * 100, 1) if total_att > 0 else 0
+        att_rate = float(skills_by_user.get(uid, {}).get("출결", 0))
 
         result.append(
             AdminStudentResponse(
@@ -134,31 +107,10 @@ def get_admin_student_detail(student_id: str, user=Depends(get_current_admin)):
     s = profile_res.data[0] if isinstance(profile_res.data, list) else profile_res.data
     uid = s["id"]
 
-    att_res = (
-        supabase.table("attendance")
-        .select("status")
-        .eq("user_id", uid)
-        .execute()
-    )
-    att_records = att_res.data or []
-    total_att = len(att_records)
-    attended = sum(1 for a in att_records if a.get("status") in ("present", "late"))
-    att_rate = round((attended / total_att) * 100, 1) if total_att > 0 else 0
-
-    skills_res = (
-        supabase.table("skill_scores")
-        .select("attendance, ai_speaking, ai_interview, portfolio, project_assignment_exam")
-        .eq("user_id", uid)
-        .execute()
-    )
-    sk = skills_res.data[0] if skills_res.data else {}
-    skills = {
-        "출결": sk.get("attendance", 0),
-        "AI_말하기": sk.get("ai_speaking", 0),
-        "AI_면접": sk.get("ai_interview", 0),
-        "포트폴리오": sk.get("portfolio", 0),
-        "프로젝트_과제_시험": sk.get("project_assignment_exam", 0),
-    }
+    # 스킬 동적 계산 (teacher와 동일 로직)
+    from app.services.skill_service import calculate_student_skills
+    skills = calculate_student_skills(supabase, uid)
+    att_rate = float(skills.get("출결", 0))
 
     files = _get_student_files(supabase, uid)
 

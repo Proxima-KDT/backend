@@ -14,7 +14,8 @@ class CounselingBookingResponse(BaseModel):
 
 
 class BookingActionRequest(BaseModel):
-    status: str  # confirmed, cancelled
+    action: str  # confirm, cancel
+    reason: Optional[str] = None
 
 
 class BlockedSlotsUpdate(BaseModel):

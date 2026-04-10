@@ -94,9 +94,13 @@ def update_blocked_slots(
         .eq("date", date_str)
         .execute()
     )
-    existing_map = {s["time"]: s for s in (existing_res.data or [])}
+    # DB TIME 타입은 "HH:MM:SS" 형식으로 반환 → "HH:MM"으로 정규화하여 비교
+    def normalize(t: str) -> str:
+        return t[:5] if t and len(t) >= 5 else t
 
-    # 새로 차단할 시간 추가
+    existing_map = {normalize(s["time"]): s for s in (existing_res.data or [])}
+
+    # 새로 차단할 시간 추가 (이미 존재하면 스킵)
     for time_slot in body.blocked_times:
         if time_slot not in existing_map:
             supabase.table("counseling_blocked_slots").insert({
@@ -181,14 +185,16 @@ def update_booking_status(
     if not existing.data:
         raise HTTPException(status_code=404, detail="예약을 찾을 수 없습니다.")
 
-    if body.status not in ("confirmed", "cancelled"):
-        raise HTTPException(status_code=400, detail="유효하지 않은 상태입니다. (confirmed/cancelled)")
+    action_to_status = {"confirm": "confirmed", "cancel": "cancelled"}
+    if body.action not in action_to_status:
+        raise HTTPException(status_code=400, detail="유효하지 않은 액션입니다. (confirm/cancel)")
 
+    new_status = action_to_status[body.action]
     supabase.table("counseling_bookings").update(
-        {"status": body.status}
+        {"status": new_status}
     ).eq("id", booking_id).execute()
 
-    status_label = "확정" if body.status == "confirmed" else "취소"
+    status_label = "확정" if new_status == "confirmed" else "취소"
     return {"message": f"상담 예약이 {status_label}되었습니다."}
 
 
@@ -205,5 +211,9 @@ def get_blocked_slots(date_str: str, user=Depends(get_teacher_or_admin)):
         .order("time")
         .execute()
     )
-    blocked = [s["time"] for s in (res.data or [])]
+    # TIME 타입은 "HH:MM:SS" 형식으로 반환 → "HH:MM" 으로 정규화
+    def normalize_time(t: str) -> str:
+        return t[:5] if t and len(t) >= 5 else t
+
+    blocked = [normalize_time(s["time"]) for s in (res.data or [])]
     return blocked

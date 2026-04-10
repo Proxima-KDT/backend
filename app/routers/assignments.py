@@ -6,6 +6,8 @@ from app.schemas.assignment import (
     AssignmentResponse,
     AssignmentSubmitResponse,
     AssignmentFeedbackResponse,
+    FileDeleteRequest,
+    FileDeleteResponse,
 )
 
 router = APIRouter(prefix="/api/assignments", tags=["assignments"])
@@ -53,6 +55,7 @@ async def list_assignments(user=Depends(get_current_user)):
         result.append(
             AssignmentResponse(
                 id=aid,
+                phase=a.get("phase"),
                 subject=a.get("subject"),
                 title=a["title"],
                 description=a.get("description"),
@@ -150,6 +153,61 @@ async def submit_assignment(
         record_id = str(res.data[0]["id"])
 
     return AssignmentSubmitResponse(id=record_id, status="submitted", submitted_at=now_str)
+
+
+@router.delete("/{assignment_id}/files", response_model=FileDeleteResponse)
+async def delete_submitted_file(
+    assignment_id: str,
+    body: FileDeleteRequest,
+    user=Depends(get_current_user),
+):
+    """제출 파일 단건 삭제 (Storage + DB)"""
+    supabase = get_supabase()
+
+    try:
+        assignment_id_int = int(assignment_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="잘못된 과제 ID입니다.")
+
+    # 제출 기록 조회
+    sub_res = (
+        supabase.table("assignment_submissions")
+        .select("id, status, files")
+        .eq("assignment_id", assignment_id_int)
+        .eq("student_id", user["id"])
+        .execute()
+    )
+    if not sub_res.data:
+        raise HTTPException(status_code=404, detail="제출 기록을 찾을 수 없습니다.")
+
+    sub = sub_res.data[0]
+    if sub["status"] == "graded":
+        raise HTTPException(status_code=409, detail="채점 완료된 과제의 파일은 삭제할 수 없습니다.")
+
+    files: list = sub.get("files") or []
+    new_files = [f for f in files if f.get("path") != body.file_path]
+    if len(new_files) == len(files):
+        raise HTTPException(status_code=404, detail="해당 파일을 찾을 수 없습니다.")
+
+    # Supabase Storage에서 실제 파일 삭제
+    try:
+        supabase.storage.from_("uploads").remove([body.file_path])
+    except Exception:
+        # Storage 삭제 실패해도 DB 업데이트는 진행 (고아 파일은 허용)
+        pass
+
+    # 모든 파일 삭제 시 submitted → pending 으로 복원 (resubmit_required는 유지)
+    new_status = sub["status"]
+    if not new_files and sub["status"] == "submitted":
+        new_status = "pending"
+
+    update_payload = {"files": new_files, "status": new_status}
+    if new_status == "pending":
+        update_payload["submitted_at"] = None
+
+    supabase.table("assignment_submissions").update(update_payload).eq("id", sub["id"]).execute()
+
+    return FileDeleteResponse(status=new_status, submitted_files=new_files)
 
 
 @router.get("/{assignment_id}/feedback", response_model=AssignmentFeedbackResponse)

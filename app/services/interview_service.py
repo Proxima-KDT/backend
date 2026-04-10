@@ -2,6 +2,7 @@ import uuid
 import json
 from typing import Optional
 from openai import AsyncOpenAI
+from app.config import get_settings
 from app.utils.prompts import (
     get_interview_system_prompt,
     get_report_prompt,
@@ -12,7 +13,7 @@ from app.utils.prompts import (
 # 인메모리 세션 저장소 (추후 Supabase Redis로 교체)
 _sessions: dict = {}
 
-TOTAL_QUESTIONS = 5
+TOTAL_QUESTIONS = 10
 
 _client: AsyncOpenAI | None = None
 
@@ -20,7 +21,8 @@ _client: AsyncOpenAI | None = None
 def _get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
-        _client = AsyncOpenAI()
+        # pydantic_settings는 os.environ에 전파하지 않으므로 명시적으로 전달
+        _client = AsyncOpenAI(api_key=get_settings().OPENAI_API_KEY)
     return _client
 
 
@@ -95,9 +97,10 @@ async def process_answer(session_id: str, answer: str) -> dict:
 
     # 다음 질문 생성
     next_q_number = question_count + 1
+    # system role로 지시 — user 대화 흐름 오염 방지
     session["messages"].append({
-        "role": "user",
-        "content": f"(시스템: 현재 {question_count}번째 질문까지 완료했습니다. {next_q_number}번째 질문을 해주세요.)",
+        "role": "system",
+        "content": f"현재 {question_count}번째 질문까지 완료했습니다. 이제 {next_q_number}번째 면접 질문을 해주세요.",
     })
 
     response = await _get_client().chat.completions.create(

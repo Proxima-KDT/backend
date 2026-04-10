@@ -80,7 +80,7 @@ def get_counseling_slots(
     blocked_by_date: dict = {}
     for s in (blocked_res.data or []):
         d = s["date"]
-        blocked_by_date.setdefault(d, set()).add(s["time"])
+        blocked_by_date.setdefault(d, set()).add(s["time"][:5])  # HH:MM:SS → HH:MM
 
     # 이미 예약된 슬롯
     booked_res = (

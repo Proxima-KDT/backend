@@ -4,6 +4,7 @@ from typing import List, Optional
 
 class AssignmentResponse(BaseModel):
     id: str
+    phase: Optional[int] = None
     subject: Optional[str]
     title: str
     description: Optional[str]
@@ -28,3 +29,12 @@ class AssignmentFeedbackResponse(BaseModel):
     score: Optional[int]
     feedback: Optional[str]
     rubric: Optional[list]
+
+
+class FileDeleteRequest(BaseModel):
+    file_path: str  # Supabase Storage 경로
+
+
+class FileDeleteResponse(BaseModel):
+    status: str          # 삭제 후 제출 상태
+    submitted_files: List[dict]

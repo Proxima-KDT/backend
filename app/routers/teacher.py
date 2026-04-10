@@ -9,6 +9,7 @@ from app.schemas.teacher import (
     StudentNoteUpdate,
     AttendanceWeekRecord,
     ClassroomSeatResponse,
+    SeatAssignRequest,
     DailyAttendanceRecord,
     AttendanceStatusUpdate,
     TeacherAssignmentResponse,
@@ -57,14 +58,11 @@ async def list_students(user=Depends(get_current_teacher)):
 
     student_ids = [s["id"] for s in students]
 
-    # 배치 쿼리 — 학생 수에 관계없이 쿼리 5개로 고정
-    att_res = (
-        supabase.table("attendance")
-        .select("user_id, status")
-        .in_("user_id", student_ids)
-        .execute()
-    )
-    # 전체 과제 수는 한 번만 조회
+    # 동적 스킬 5축 배치 계산 (profile/skill-scores와 동일 로직 — skill_scores 테이블 stale 값 사용 안 함)
+    from app.services.skill_service import calculate_students_skills_batch
+    skills_by_user = calculate_students_skills_batch(supabase, student_ids)
+
+    # 과제 제출률
     assign_res = supabase.table("assignments").select("id", count="exact").execute()
     total_assignments = assign_res.count or 0
 
@@ -75,12 +73,6 @@ async def list_students(user=Depends(get_current_teacher)):
         .neq("status", "pending")
         .execute()
     )
-    skills_res = (
-        supabase.table("skill_scores")
-        .select("user_id, attendance, ai_speaking, ai_interview, portfolio, project_assignment_exam")
-        .in_("user_id", student_ids)
-        .execute()
-    )
     files_res = (
         supabase.table("student_files")
         .select("student_id, name, type, url, uploaded_at")
@@ -88,24 +80,9 @@ async def list_students(user=Depends(get_current_teacher)):
         .execute()
     )
 
-    # 메모리에서 집계
-    att_by_user: dict = {}
-    for a in (att_res.data or []):
-        att_by_user.setdefault(a["user_id"], []).append(a["status"])
-
     submitted_by_user: dict = {}
     for sub in (submitted_res.data or []):
         submitted_by_user[sub["student_id"]] = submitted_by_user.get(sub["student_id"], 0) + 1
-
-    skills_by_user: dict = {}
-    for sk in (skills_res.data or []):
-        skills_by_user[sk["user_id"]] = {
-            "출결": sk.get("attendance", 0),
-            "AI_말하기": sk.get("ai_speaking", 0),
-            "AI_면접": sk.get("ai_interview", 0),
-            "포트폴리오": sk.get("portfolio", 0),
-            "프로젝트_과제_시험": sk.get("project_assignment_exam", 0),
-        }
 
     files_by_user: dict = {}
     for f in (files_res.data or []):
@@ -119,10 +96,8 @@ async def list_students(user=Depends(get_current_teacher)):
     result = []
     for s in students:
         uid = s["id"]
-        records = att_by_user.get(uid, [])
-        total_att = len(records)
-        attended = sum(1 for r in records if r in ("present", "late"))
-        att_rate = round((attended / total_att) * 100, 1) if total_att > 0 else 0
+        # 출결률은 스킬 출결 값과 동일 (훈련 기간 평일 대비 동적 계산)
+        att_rate = float(skills_by_user.get(uid, {}).get("출결", 0))
 
         submitted_count = submitted_by_user.get(uid, 0)
         sub_rate = round((submitted_count / total_assignments) * 100, 1) if total_assignments > 0 else 0
@@ -163,17 +138,10 @@ async def get_student_detail(student_id: str, user=Depends(get_current_teacher))
     s = profile_res.data[0] if isinstance(profile_res.data, list) else profile_res.data
     uid = s["id"]
 
-    # 출석률
-    att_res = (
-        supabase.table("attendance")
-        .select("status")
-        .eq("user_id", uid)
-        .execute()
-    )
-    att_records = att_res.data or []
-    total_att = len(att_records)
-    attended = sum(1 for a in att_records if a.get("status") in ("present", "late"))
-    att_rate = round((attended / total_att) * 100, 1) if total_att > 0 else 0
+    # 스킬 5축 동적 계산 (profile/skill-scores와 동일 로직)
+    from app.services.skill_service import calculate_student_skills
+    skills = calculate_student_skills(supabase, uid)
+    att_rate = float(skills.get("출결", 0))
 
     # 제출률
     assign_res = supabase.table("assignments").select("id", count="exact").execute()
@@ -188,24 +156,21 @@ async def get_student_detail(student_id: str, user=Depends(get_current_teacher))
     submitted_count = submitted_res.count or 0
     sub_rate = round((submitted_count / total_assignments) * 100, 1) if total_assignments > 0 else 0
 
-    # 스킬
-    skills_res = (
-        supabase.table("skill_scores")
-        .select("attendance, ai_speaking, ai_interview, portfolio, project_assignment_exam")
-        .eq("user_id", uid)
-        .execute()
-    )
-    sk = skills_res.data[0] if skills_res.data else {}
-    skills = {
-        "출결": sk.get("attendance", 0),
-        "AI_말하기": sk.get("ai_speaking", 0),
-        "AI_면접": sk.get("ai_interview", 0),
-        "포트폴리오": sk.get("portfolio", 0),
-        "프로젝트_과제_시험": sk.get("project_assignment_exam", 0),
-    }
-
     # 파일
     files = _get_student_files(supabase, uid)
+
+    # 상담 메모 (audio_url 없는 레코드 = 빠른 메모, 가장 최근 것)
+    notes_res = (
+        supabase.table("counseling_records")
+        .select("summary")
+        .eq("counselor_id", user["id"])
+        .eq("student_id", uid)
+        .is_("audio_url", "null")
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    notes = notes_res.data[0]["summary"] if notes_res.data else None
 
     return TeacherStudentResponse(
         id=uid,
@@ -218,6 +183,7 @@ async def get_student_detail(student_id: str, user=Depends(get_current_teacher))
         is_at_risk=att_rate < 80,
         last_active=s.get("updated_at", "")[:10] if s.get("updated_at") else None,
         enrolled_at=s.get("created_at", "")[:10] if s.get("created_at") else None,
+        notes=notes,
         skills=skills,
         files=files,
     )
@@ -263,20 +229,37 @@ async def get_student_weekly_attendance(
 async def update_student_notes(
     student_id: str, body: StudentNoteUpdate, user=Depends(get_current_teacher)
 ):
-    """학생 상담 메모 저장/수정 — counseling_records에 저장"""
+    """학생 상담 메모 저장/수정 — counseling_records의 기존 메모 레코드 upsert"""
     supabase = get_supabase()
 
-    # 학생 이름 조회
     student_res = supabase.table("users").select("name").eq("id", student_id).execute()
     student_name = student_res.data[0]["name"] if student_res.data else ""
 
-    supabase.table("counseling_records").insert({
-        "student_id": student_id,
-        "student_name": student_name,
-        "counselor_id": user["id"],
-        "date": date.today().isoformat(),
-        "summary": body.notes,
-    }).execute()
+    # audio_url이 없는 레코드 = 빠른 메모 (음성 상담 기록과 구분)
+    existing = (
+        supabase.table("counseling_records")
+        .select("id")
+        .eq("counselor_id", user["id"])
+        .eq("student_id", student_id)
+        .is_("audio_url", "null")
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    if existing.data:
+        supabase.table("counseling_records").update({
+            "summary": body.notes,
+            "date": date.today().isoformat(),
+        }).eq("id", existing.data[0]["id"]).execute()
+    else:
+        supabase.table("counseling_records").insert({
+            "student_id": student_id,
+            "student_name": student_name,
+            "counselor_id": user["id"],
+            "date": date.today().isoformat(),
+            "summary": body.notes,
+        }).execute()
 
     return {"message": "상담 메모가 저장되었습니다."}
 
@@ -288,11 +271,23 @@ async def update_student_notes(
 
 @router.get("/classroom/seats", response_model=List[ClassroomSeatResponse])
 async def get_classroom_seats(user=Depends(get_current_teacher)):
-    """교실 좌석 배치도 조회"""
+    """교실 좌석 배치도 조회 — users 테이블 join으로 student_name 실시간 조회"""
     supabase = get_supabase()
 
     res = supabase.table("classroom_seats").select("*").order("row").order("col").execute()
     seats = res.data or []
+
+    # 배정된 학생 이름 일괄 조회 (N+1 방지)
+    student_ids = [s["student_id"] for s in seats if s.get("student_id")]
+    student_names: dict = {}
+    if student_ids:
+        users_res = (
+            supabase.table("users")
+            .select("id, name")
+            .in_("id", student_ids)
+            .execute()
+        )
+        student_names = {u["id"]: u["name"] for u in (users_res.data or [])}
 
     return [
         ClassroomSeatResponse(
@@ -300,10 +295,89 @@ async def get_classroom_seats(user=Depends(get_current_teacher)):
             row=s["row"],
             col=s["col"],
             student_id=s.get("student_id"),
-            student_name=s.get("student_name"),
+            student_name=student_names.get(s.get("student_id", "")),
         )
         for s in seats
     ]
+
+
+@router.patch("/classroom/seats/{seat_id}/assign", response_model=ClassroomSeatResponse)
+async def assign_seat(
+    seat_id: str, body: SeatAssignRequest, user=Depends(get_current_teacher)
+):
+    """좌석에 학생 배정 / 이동 / 해제 (드래그앤드롭 저장)"""
+    supabase = get_supabase()
+
+    # 같은 학생이 다른 자리에 이미 배정되어 있으면 먼저 해제
+    if body.student_id:
+        existing = (
+            supabase.table("classroom_seats")
+            .select("seat_id")
+            .eq("student_id", body.student_id)
+            .execute()
+        )
+        for prev in (existing.data or []):
+            if prev["seat_id"] != seat_id:
+                supabase.table("classroom_seats").update(
+                    {"student_id": None}
+                ).eq("seat_id", prev["seat_id"]).execute()
+
+    # 목표 좌석 업데이트
+    supabase.table("classroom_seats").update(
+        {"student_id": body.student_id}
+    ).eq("seat_id", seat_id).execute()
+
+    res = (
+        supabase.table("classroom_seats")
+        .select("*")
+        .eq("seat_id", seat_id)
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(status_code=404, detail="좌석을 찾을 수 없습니다.")
+
+    s = res.data[0]
+    student_name = None
+    if s.get("student_id"):
+        u = (
+            supabase.table("users")
+            .select("name")
+            .eq("id", s["student_id"])
+            .execute()
+        )
+        student_name = u.data[0]["name"] if u.data else None
+
+    return ClassroomSeatResponse(
+        seat_id=s["seat_id"],
+        row=s["row"],
+        col=s["col"],
+        student_id=s.get("student_id"),
+        student_name=student_name,
+    )
+
+
+@router.post("/classroom/seats/init")
+async def init_classroom_seats(user=Depends(get_current_teacher)):
+    """빈 좌석 10개 초기화 (2열 × 5행) — 좌석이 하나도 없을 때만 실행"""
+    supabase = get_supabase()
+
+    existing = supabase.table("classroom_seats").select("seat_id", count="exact").execute()
+    if (existing.count or 0) > 0:
+        return {"message": "이미 좌석이 설정되어 있습니다.", "count": existing.count}
+
+    rows, cols = 5, 2
+    seats = [
+        {
+            "seat_id": f"R{r}C{c}",
+            "row": r,
+            "col": c,
+            "student_id": None,
+        }
+        for r in range(1, rows + 1)
+        for c in range(1, cols + 1)
+    ]
+    supabase.table("classroom_seats").insert(seats).execute()
+    return {"message": f"좌석 {len(seats)}개가 초기화되었습니다.", "count": len(seats)}
 
 
 @router.get("/attendance/{date_str}", response_model=List[DailyAttendanceRecord])
@@ -466,15 +540,29 @@ async def create_assignment(body: AssignmentCreateRequest, user=Depends(get_curr
 
     rubric_data = [{"item": r.item, "maxScore": r.maxScore} for r in body.rubric]
 
+    # Phase에서 subject 자동 도출 (프론트에서 보내주지만 백엔드에서도 보장)
+    phase_subject_map = {
+        1: "Python 기초",
+        2: "JavaScript & React",
+        3: "DB & SQL",
+        4: "알고리즘 & 자료구조",
+        5: "풀스택 프로젝트",
+        6: "ML/DL & 취업준비",
+    }
+    subject = body.subject or phase_subject_map.get(body.phase, "")
+
     res = (
         supabase.table("assignments")
         .insert({
             "title": body.title,
-            "subject": body.subject,
+            "subject": subject,
+            "phase": body.phase,
             "description": body.description,
+            "open_date": body.openDate,
             "due_date": body.dueDate,
             "max_score": body.maxScore,
             "rubric": rubric_data,
+            "created_by": user["id"],
         })
         .execute()
     )
@@ -565,10 +653,11 @@ async def grade_assignment_submission(
         raise HTTPException(status_code=404, detail="제출 기록을 찾을 수 없습니다.")
 
     update_data = {
-        "score": body.score,
         "feedback": body.feedback,
         "status": body.status,
     }
+    if body.score is not None:
+        update_data["score"] = body.score
     if body.rubricScores:
         update_data["rubric_scores"] = [
             {"item": rs.item, "score": rs.score, "maxScore": rs.maxScore}
@@ -581,6 +670,122 @@ async def grade_assignment_submission(
     ).execute()
 
     return {"message": "채점이 완료되었습니다."}
+
+
+@router.post("/assignments/{assignment_id}/submissions/{student_id}/ai-feedback")
+async def ai_feedback_assignment(
+    assignment_id: str, student_id: str, user=Depends(get_current_teacher)
+):
+    """과제 제출 파일을 AI가 읽고 루브릭 채점 + 피드백 생성 (저장하지 않음, 초안 반환)."""
+    supabase = get_supabase()
+
+    # 과제 정보
+    assign_res = (
+        supabase.table("assignments")
+        .select("title, description, rubric")
+        .eq("id", assignment_id)
+        .execute()
+    )
+    if not assign_res.data:
+        raise HTTPException(status_code=404, detail="과제를 찾을 수 없습니다.")
+    assign = assign_res.data[0] if isinstance(assign_res.data, list) else assign_res.data
+
+    # 학생 제출 정보 (files 컬럼)
+    sub_res = (
+        supabase.table("assignment_submissions")
+        .select("files")
+        .eq("assignment_id", assignment_id)
+        .eq("student_id", student_id)
+        .execute()
+    )
+    if not sub_res.data:
+        raise HTTPException(status_code=404, detail="제출 기록을 찾을 수 없습니다.")
+    sub = sub_res.data[0] if isinstance(sub_res.data, list) else sub_res.data
+
+    # 파일 URL 목록 추출 — path는 Storage 버킷 내부 경로이므로 signed URL로 변환
+    raw_files = sub.get("files") or []
+    # (원본 파일명, signed URL) 쌍으로 관리 — GPT에 의미있는 파일명 전달
+    file_items: list[tuple[str, str]] = []
+    if isinstance(raw_files, list):
+        for f in raw_files:
+            if not isinstance(f, dict):
+                continue
+            bucket_path = f.get("path") or f.get("url", "")
+            original_name = f.get("name", "") or bucket_path.split("/")[-1]
+            if not bucket_path:
+                continue
+            if bucket_path.startswith("http"):
+                file_items.append((original_name, bucket_path))
+            else:
+                try:
+                    signed = supabase.storage.from_("uploads").create_signed_url(
+                        bucket_path, expires_in=300  # 5분 유효
+                    )
+                    url = signed.get("signedURL") or signed.get("signed_url") or ""
+                    if url:
+                        file_items.append((original_name, url))
+                except Exception:
+                    pass  # 서명 실패한 파일은 건너뜀
+
+    rubric = assign.get("rubric") or []
+
+    from app.services.ai_service import grade_assignment_submission
+    result = await grade_assignment_submission(
+        assignment_title=assign.get("title", ""),
+        assignment_description=assign.get("description", ""),
+        rubric=rubric,
+        file_items=file_items,
+    )
+
+    return {
+        "rubricScores": result["rubric_scores"],
+        "totalScore": result["total_score"],
+        "feedback": result["feedback"],
+        "filesRead": len(file_items),
+    }
+
+
+@router.get("/assignments/{assignment_id}/submissions/{student_id}/download-urls")
+async def get_submission_download_urls(
+    assignment_id: str, student_id: str, user=Depends(get_current_teacher)
+):
+    """제출 파일의 다운로드용 signed URL 목록 반환 (5분 유효)"""
+    supabase = get_supabase()
+
+    sub_res = (
+        supabase.table("assignment_submissions")
+        .select("files")
+        .eq("assignment_id", assignment_id)
+        .eq("student_id", student_id)
+        .execute()
+    )
+    if not sub_res.data:
+        raise HTTPException(status_code=404, detail="제출 기록을 찾을 수 없습니다.")
+    sub = sub_res.data[0] if isinstance(sub_res.data, list) else sub_res.data
+
+    raw_files = sub.get("files") or []
+    result = []
+    for f in (raw_files if isinstance(raw_files, list) else []):
+        if not isinstance(f, dict):
+            continue
+        bucket_path = f.get("path", "")
+        name = f.get("name", bucket_path.split("/")[-1])
+        if not bucket_path:
+            continue
+        if bucket_path.startswith("http"):
+            result.append({"name": name, "url": bucket_path})
+        else:
+            try:
+                signed = supabase.storage.from_("uploads").create_signed_url(
+                    bucket_path, expires_in=300
+                )
+                url = signed.get("signedURL") or signed.get("signed_url") or ""
+                if url:
+                    result.append({"name": name, "url": url})
+            except Exception:
+                pass
+
+    return {"files": result}
 
 
 @router.delete("/assignments/{assignment_id}")
@@ -636,13 +841,26 @@ async def list_teacher_assessments(user=Depends(get_current_teacher)):
         for student in students:
             sid = student["id"]
             sub = subs_map.get(sid)
+            # 제출된 파일 목록 (name/path만, signed URL은 download-urls 엔드포인트에서 발급)
+            sub_files = []
+            if sub and sub.get("files"):
+                for f in (sub["files"] if isinstance(sub["files"], list) else []):
+                    if not isinstance(f, dict):
+                        continue
+                    sub_files.append(
+                        FileItem(
+                            name=f.get("name", f.get("path", "").split("/")[-1]),
+                            size=f.get("size"),
+                            url=f.get("path", ""),
+                        )
+                    )
             student_submissions.append(
                 AssessmentSubmission(
                     studentId=sid,
                     studentName=student.get("name", ""),
                     status=sub["status"] if sub else "pending",
                     submittedAt=sub.get("submitted_at") if sub else None,
-                    files=[],
+                    files=sub_files,
                     score=sub.get("score") if sub else None,
                     passed=sub.get("passed") if sub else None,
                     feedback=sub.get("feedback") if sub else None,
@@ -661,7 +879,7 @@ async def list_teacher_assessments(user=Depends(get_current_teacher)):
                 id=aid,
                 phaseId=a.get("phase_id"),
                 phaseTitle=a.get("phase_title"),
-                title=a.get("subject"),
+                title=a.get("title"),
                 subject=a.get("subject"),
                 description=a.get("description"),
                 period={"start": a.get("period_start"), "end": a.get("period_end")},
@@ -674,11 +892,54 @@ async def list_teacher_assessments(user=Depends(get_current_teacher)):
     return result
 
 
+@router.get("/assessments/{assessment_id}/submissions/{student_id}/download-urls")
+async def get_assessment_submission_download_urls(
+    assessment_id: str, student_id: str, user=Depends(get_current_teacher)
+):
+    """평가 제출 파일의 다운로드용 signed URL 목록 반환 (5분 유효)"""
+    supabase = get_supabase()
+
+    sub_res = (
+        supabase.table("assessment_submissions")
+        .select("files")
+        .eq("assessment_id", assessment_id)
+        .eq("student_id", student_id)
+        .execute()
+    )
+    if not sub_res.data:
+        raise HTTPException(status_code=404, detail="제출 기록을 찾을 수 없습니다.")
+    sub = sub_res.data[0]
+
+    raw_files = sub.get("files") or []
+    result = []
+    for f in (raw_files if isinstance(raw_files, list) else []):
+        if not isinstance(f, dict):
+            continue
+        bucket_path = f.get("path", "")
+        name = f.get("name", bucket_path.split("/")[-1])
+        if not bucket_path:
+            continue
+        if bucket_path.startswith("http"):
+            result.append({"name": name, "url": bucket_path})
+        else:
+            try:
+                signed = supabase.storage.from_("uploads").create_signed_url(
+                    bucket_path, expires_in=300
+                )
+                url = signed.get("signedURL") or signed.get("signed_url") or ""
+                if url:
+                    result.append({"name": name, "url": url})
+            except Exception:
+                pass
+
+    return {"files": result}
+
+
 @router.post("/assessments/{assessment_id}/submissions/{student_id}/ai-score")
 async def ai_grade_assessment(
     assessment_id: str, student_id: str, user=Depends(get_current_teacher)
 ):
-    """AI 자동 채점 (GPT-4o-mini)"""
+    """AI 자동 채점 (GPT-4o-mini) — 루브릭 항목별 점수 + 종합 피드백 반환 (저장 안 함, 초안)"""
     supabase = get_supabase()
 
     assessment_res = (
@@ -700,28 +961,50 @@ async def ai_grade_assessment(
     if not sub_res.data:
         raise HTTPException(status_code=404, detail="제출 기록을 찾을 수 없습니다.")
 
-    assessment = assessment_res.data
+    # Bug fix: .data는 리스트, [0]으로 단건 추출
+    assessment = assessment_res.data[0]
+    sub_record = sub_res.data[0]
     rubric = assessment.get("rubric") or []
+
+    # 제출 파일 signed URL 준비
+    raw_files = sub_record.get("files") or []
+    file_items: list[tuple[str, str]] = []
+    if isinstance(raw_files, list):
+        for f in raw_files:
+            if not isinstance(f, dict):
+                continue
+            bucket_path = f.get("path") or f.get("url", "")
+            original_name = f.get("name", "") or bucket_path.split("/")[-1]
+            if not bucket_path:
+                continue
+            if bucket_path.startswith("http"):
+                file_items.append((original_name, bucket_path))
+            else:
+                try:
+                    signed = supabase.storage.from_("uploads").create_signed_url(
+                        bucket_path, expires_in=300
+                    )
+                    url = signed.get("signedURL") or signed.get("signed_url") or ""
+                    if url:
+                        file_items.append((original_name, url))
+                except Exception:
+                    pass
 
     from app.services.ai_service import grade_assessment
     ai_result = await grade_assessment(
         assessment_description=assessment.get("description", ""),
         rubric=rubric,
         max_score=assessment.get("max_score", 100),
+        file_items=file_items,
     )
 
     pass_score = assessment.get("pass_score", 60)
-    sub_record = sub_res.data[0] if isinstance(sub_res.data, list) else sub_res.data
-    supabase.table("assessment_submissions").update({
-        "score": ai_result["score"],
-        "passed": ai_result["score"] >= pass_score,
-        "feedback": ai_result["feedback"],
-        "status": "graded",
-    }).eq("id", sub_record["id"]).execute()
+    passed = ai_result["score"] >= pass_score
 
     return {
         "score": ai_result["score"],
-        "passed": ai_result["score"] >= pass_score,
+        "passed": passed,
+        "rubric_scores": ai_result.get("rubric_scores", []),
         "feedback": ai_result["feedback"],
     }
 
@@ -831,7 +1114,7 @@ async def create_problem(body: ProblemCreateRequest, user=Depends(get_current_te
 
 @router.patch("/problems/{problem_id}")
 async def update_problem(
-    problem_id: int, body: ProblemUpdateRequest, user=Depends(get_current_teacher)
+    problem_id: str, body: ProblemUpdateRequest, user=Depends(get_current_teacher)
 ):
     """문제 수정"""
     supabase = get_supabase()
@@ -868,7 +1151,7 @@ async def update_problem(
 
 
 @router.delete("/problems/{problem_id}")
-async def delete_problem(problem_id: int, user=Depends(get_current_teacher)):
+async def delete_problem(problem_id: str, user=Depends(get_current_teacher)):
     """문제 삭제"""
     supabase = get_supabase()
 
@@ -963,6 +1246,9 @@ async def upload_counseling_audio(
     record = res.data[0]
     return {
         "id": str(record["id"]),
+        "student_name": student_name,
+        "date": date.today().isoformat(),
+        "duration": summary_result.get("duration"),
         "summary": summary_result.get("summary"),
         "action_items": summary_result.get("action_items", []),
         "speakers": summary_result.get("speakers", []),
@@ -1057,7 +1343,6 @@ async def answer_question(
 
     supabase.table("questions").update({
         "answer": body.answer,
-        "answered_by": user["id"],
         "answered_at": datetime.now().isoformat(),
     }).eq("id", question_id).execute()
 

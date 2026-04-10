@@ -33,6 +33,7 @@ class TeacherStudentResponse(BaseModel):
     is_at_risk: bool = False
     last_active: Optional[str] = None
     enrolled_at: Optional[str] = None
+    notes: Optional[str] = None
     skills: Dict[str, float] = {}
     files: List[StudentFile] = []
 
@@ -57,6 +58,10 @@ class ClassroomSeatResponse(BaseModel):
     student_name: Optional[str] = None
 
 
+class SeatAssignRequest(BaseModel):
+    student_id: Optional[str] = None  # None이면 배정 해제
+
+
 class DailyAttendanceRecord(BaseModel):
     student_id: str
     student_name: str
@@ -79,7 +84,7 @@ class RubricItem(BaseModel):
 class RubricScoreItem(BaseModel):
     item: str
     score: Optional[int] = None
-    maxScore: int
+    maxScore: Optional[int] = None
 
 
 class FileItem(BaseModel):
@@ -125,7 +130,7 @@ class AssignmentCreateRequest(BaseModel):
 
 
 class GradeSubmissionRequest(BaseModel):
-    score: int
+    score: Optional[int] = None
     feedback: Optional[str] = None
     rubricScores: Optional[List[RubricScoreItem]] = None
     status: str = "graded"  # graded or resubmit_required

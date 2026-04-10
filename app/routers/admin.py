@@ -1,5 +1,6 @@
 ﻿from datetime import date, datetime, timedelta
 from typing import List, Optional
+import uuid
 from fastapi import APIRouter, HTTPException, Depends, Query
 from app.dependencies import get_current_admin
 from app.utils.supabase_client import get_supabase
@@ -12,6 +13,7 @@ from app.schemas.admin import (
     EquipmentRequestResponse,
     EquipmentRejectRequest,
     EquipmentHistoryItem,
+    EquipmentSession,
     AdminRoomResponse,
     RoomCreateRequest,
     RoomUpdateRequest,
@@ -293,36 +295,106 @@ def list_admin_equipment(
     ]
 
 
-@router.get("/equipment/{equipment_id}/history", response_model=List[EquipmentHistoryItem])
+@router.get("/equipment/{equipment_id}/history", response_model=List[EquipmentSession])
 def get_equipment_history(equipment_id: str, user=Depends(get_current_admin)):
-    """장비 사용 이력"""
+    """장비 사용 이력 — borrow/return 쌍을 세션으로 묶어 반환"""
     supabase = get_supabase()
 
     res = (
         supabase.table("equipment_logs")
         .select("*, users!equipment_logs_user_id_fkey(name)")
         .eq("equipment_id", equipment_id)
-        .order("created_at", desc=True)
+        .order("created_at", desc=False)  # 오래된 순 정렬 후 페어링
         .execute()
     )
-    history = res.data or []
+    logs = res.data or []
 
-    return [
-        EquipmentHistoryItem(
-            id=str(h["id"]),
-            date=h.get("created_at", "")[:10] if h.get("created_at") else None,
-            action=h.get("action"),
-            user_name=(h.get("users") or {}).get("name") if isinstance(h.get("users"), dict) else None,
-            note=h.get("note"),
-        )
-        for h in history
-    ]
+    def get_name(log):
+        u = log.get("users")
+        return u.get("name") if isinstance(u, dict) else None
+
+    sessions: list = []
+    # user_id 기준 미반납 대여 로그 임시 저장
+    pending: dict = {}  # user_id -> log
+
+    for log in logs:
+        action = log.get("action")
+        uid = log.get("user_id")
+        ts = log.get("created_at", "")
+
+        if action == "borrow":
+            # 같은 사용자의 이전 미반납 대여가 있으면 우선 is_active=True로 추가
+            if uid in pending:
+                prev = pending.pop(uid)
+                sessions.append(EquipmentSession(
+                    user_name=get_name(prev),
+                    borrow_at=prev.get("created_at"),
+                    return_at=None,
+                    is_active=True,
+                    note=prev.get("note"),
+                    action="borrow",
+                ))
+            pending[uid] = log
+
+        elif action == "return":
+            borrow_log = pending.pop(uid, None)
+            sessions.append(EquipmentSession(
+                user_name=get_name(log) or (get_name(borrow_log) if borrow_log else None),
+                borrow_at=borrow_log.get("created_at") if borrow_log else None,
+                return_at=ts,
+                is_active=False,
+                note=log.get("note"),
+                action="borrow",
+            ))
+
+        else:
+            # maintenance / status_change 등 기타 이벤트
+            sessions.append(EquipmentSession(
+                user_name=get_name(log),
+                borrow_at=ts,
+                return_at=None,
+                is_active=False,
+                note=log.get("note"),
+                action=action or "status_change",
+            ))
+
+    # 아직 반납 안 된 pending 대여
+    for pending_log in pending.values():
+        sessions.append(EquipmentSession(
+            user_name=get_name(pending_log),
+            borrow_at=pending_log.get("created_at"),
+            return_at=None,
+            is_active=True,
+            note=pending_log.get("note"),
+            action="borrow",
+        ))
+
+    # 최신 순 정렬 (borrow_at 기준, 없으면 return_at)
+    sessions.sort(
+        key=lambda s: s.borrow_at or s.return_at or "",
+        reverse=True,
+    )
+    return sessions
 
 
-@router.post("/equipment")
+@router.post("/equipment", response_model=AdminEquipmentResponse)
 def create_equipment(body: EquipmentCreateRequest, user=Depends(get_current_admin)):
-    """장비 등록"""
+    """장비 등록 — 시리얼 중복 방지"""
     supabase = get_supabase()
+
+    # 시리얼 중복 체크
+    dup = (
+        supabase.table("equipment")
+        .select("id, name")
+        .eq("serial_no", body.serial_no)
+        .execute()
+    )
+    if dup.data:
+        existing_name = dup.data[0].get("name", "")
+        raise HTTPException(
+            status_code=409,
+            detail=f"시리얼 '{body.serial_no}'은(는) 이미 등록된 장비입니다. ({existing_name})",
+        )
 
     res = (
         supabase.table("equipment")
@@ -334,7 +406,17 @@ def create_equipment(body: EquipmentCreateRequest, user=Depends(get_current_admi
         })
         .execute()
     )
-    return {"message": "장비가 등록되었습니다.", "id": str(res.data[0]["id"])}
+    item = res.data[0]
+    return AdminEquipmentResponse(
+        id=str(item["id"]),
+        name=item["name"],
+        serial_no=item["serial_no"],
+        category=item.get("category"),
+        status=item["status"],
+        borrower=item.get("borrower_name"),
+        borrower_id=str(item["borrower_id"]) if item.get("borrower_id") else None,
+        borrowed_at=item.get("borrowed_at"),
+    )
 
 
 @router.get("/equipment/requests", response_model=List[EquipmentRequestResponse])
@@ -403,6 +485,9 @@ def approve_equipment_request(request_id: str, user=Depends(get_current_admin)):
         {"status": "approved", "decided_by": user["id"]}
     ).eq("id", request_id).execute()
 
+    from datetime import datetime
+    now_iso = datetime.utcnow().isoformat() + "+00:00"
+
     # 장비 상태 업데이트
     supabase.table("equipment").update({
         "status": "borrowed",
@@ -410,6 +495,14 @@ def approve_equipment_request(request_id: str, user=Depends(get_current_admin)):
         "borrower_name": borrower_name,
         "borrowed_at": date.today().isoformat(),
     }).eq("id", equipment_id).execute()
+
+    # 대여 로그 기록 — 이 로그가 있어야 이력에서 대여 시각을 표시할 수 있음
+    supabase.table("equipment_logs").insert({
+        "equipment_id": equipment_id,
+        "user_id": req["user_id"],
+        "action": "borrow",
+        "created_at": now_iso,
+    }).execute()
 
     return {"message": "대여 요청이 승인되었습니다."}
 
@@ -536,9 +629,12 @@ def create_room(body: RoomCreateRequest, user=Depends(get_current_admin)):
     """방 등록"""
     supabase = get_supabase()
 
+    # varchar(20) 제한: "room-" + 8자 hex = 13자
+    new_id = f"room-{uuid.uuid4().hex[:8]}"
     res = (
         supabase.table("rooms")
         .insert({
+            "id": new_id,
             "name": body.name,
             "type": body.type,
             "capacity": body.capacity,

@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+﻿from datetime import datetime, timezone
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -189,7 +189,7 @@ def answer_question(
 
     supabase.table("questions").update({
         "answer": body.answer,
-        "answered_at": datetime.now().isoformat(),
+        "answered_at": datetime.now(timezone.utc).isoformat(),
     }).eq("id", question_id).execute()
 
     return {"message": "답변이 등록되었습니다."}

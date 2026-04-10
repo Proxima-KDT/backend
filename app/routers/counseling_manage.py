@@ -125,7 +125,7 @@ def list_manage_bookings(
     month: Optional[str] = Query(None, description="YYYY-MM"),
     user=Depends(get_teacher_or_admin),
 ):
-    """상담 예약 목록 (필터: status, month) — 강사/관리자 공용"""
+    """상담 예약 목록 — 강사: 본인 예약만 / 관리자: 전체"""
     from datetime import date as date_type
 
     supabase = get_supabase()
@@ -136,6 +136,9 @@ def list_manage_bookings(
         .order("date", desc=True)
         .order("time")
     )
+
+    # 강사/관리자(멘토) 모두 자신이 담당 상담사인 예약만 조회
+    query = query.eq("counselor_id", user["id"])
 
     if status and status != "all":
         query = query.eq("status", status)

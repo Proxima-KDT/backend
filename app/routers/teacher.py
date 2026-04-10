@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
 from app.dependencies import get_current_teacher
@@ -27,6 +27,7 @@ from app.schemas.teacher import (
     ProblemUpdateRequest,
     AIProblemGenerateRequest,
     CounselingRecordResponse,
+    CounselingNoteUpdate,
     TeacherQuestionResponse,
     AnswerRequest,
 )
@@ -1214,31 +1215,50 @@ async def upload_counseling_audio(
     student_name: str = Query(...),
     user=Depends(get_current_teacher),
 ):
-    """상담 오디오 업로드 → STT → AI 요약"""
+    """상담 오디오 업로드 → Supabase Storage 저장 → Whisper STT → AI 요약"""
     from app.services.stt_service import transcribe_audio
     from app.services.ai_service import summarize_counseling
 
     audio_bytes = await file.read()
+    supabase = get_supabase()
+
+    # Supabase Storage에 오디오 파일 저장
+    today_str = date.today().isoformat()
+    safe_filename = file.filename.replace(" ", "_") if file.filename else "audio.mp3"
+    storage_path = f"counseling/{user['id']}/{today_str}_{safe_filename}"
+    content_type = file.content_type or "audio/mpeg"
+
+    audio_url = None
+    try:
+        supabase.storage.from_("uploads").upload(
+            storage_path,
+            audio_bytes,
+            {"content-type": content_type},
+        )
+        audio_url = supabase.storage.from_("uploads").get_public_url(storage_path)
+    except Exception:
+        # Storage 업로드 실패해도 STT/요약은 계속 진행
+        pass
 
     # Whisper STT
-    transcript = await transcribe_audio(audio_bytes, file.filename)
+    transcript = await transcribe_audio(audio_bytes, file.filename or safe_filename)
 
-    # AI 요약
+    # AI 요약 (GPT 기반 내용 요약 + 화자 추출)
     summary_result = await summarize_counseling(transcript)
 
     # DB 저장
-    supabase = get_supabase()
     res = (
         supabase.table("counseling_records")
         .insert({
             "counselor_id": user["id"],
             "student_name": student_name,
-            "date": date.today().isoformat(),
+            "date": today_str,
             "duration": summary_result.get("duration"),
             "transcript": transcript,
             "summary": summary_result.get("summary"),
             "action_items": summary_result.get("action_items", []),
             "speakers": summary_result.get("speakers", []),
+            "audio_url": audio_url,
         })
         .execute()
     )
@@ -1247,11 +1267,12 @@ async def upload_counseling_audio(
     return {
         "id": str(record["id"]),
         "student_name": student_name,
-        "date": date.today().isoformat(),
+        "date": today_str,
         "duration": summary_result.get("duration"),
         "summary": summary_result.get("summary"),
         "action_items": summary_result.get("action_items", []),
         "speakers": summary_result.get("speakers", []),
+        "audio_url": audio_url,
     }
 
 
@@ -1278,9 +1299,38 @@ async def list_counseling_records(user=Depends(get_current_teacher)):
             summary=r.get("summary"),
             action_items=r.get("action_items") or [],
             speakers=r.get("speakers") or [],
+            audio_url=r.get("audio_url"),
+            note=r.get("note"),
         )
         for r in records
     ]
+
+
+@router.patch("/counseling-records/{record_id}/note")
+async def update_counseling_note(
+    record_id: str,
+    body: CounselingNoteUpdate,
+    user=Depends(get_current_teacher),
+):
+    """강사 개인 메모 저장/수정"""
+    supabase = get_supabase()
+
+    existing = (
+        supabase.table("counseling_records")
+        .select("id, counselor_id")
+        .eq("id", record_id)
+        .execute()
+    )
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="상담 기록을 찾을 수 없습니다.")
+    if str(existing.data[0]["counselor_id"]) != str(user["id"]):
+        raise HTTPException(status_code=403, detail="본인 기록만 수정할 수 있습니다.")
+
+    supabase.table("counseling_records").update({"note": body.note}).eq(
+        "id", record_id
+    ).execute()
+
+    return {"message": "메모가 저장되었습니다."}
 
 
 # ═══════════════════════════════════════════════════
@@ -1343,7 +1393,7 @@ async def answer_question(
 
     supabase.table("questions").update({
         "answer": body.answer,
-        "answered_at": datetime.now().isoformat(),
+        "answered_at": datetime.now(timezone.utc).isoformat(),
     }).eq("id", question_id).execute()
 
     return {"message": "답변이 등록되었습니다."}

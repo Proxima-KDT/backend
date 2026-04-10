@@ -1,4 +1,6 @@
-﻿from datetime import date, datetime
+﻿from datetime import date, datetime, timezone, timedelta
+
+KST = timezone(timedelta(hours=9))
 from fastapi import APIRouter, HTTPException, Depends
 from app.dependencies import get_current_user
 from app.utils.supabase_client import get_supabase
@@ -44,7 +46,7 @@ def check_in(body: CheckInRequest, user=Depends(get_current_user)):
     """출석 체크인 (서명 포함)"""
     supabase = get_supabase()
     today = date.today().isoformat()
-    now = datetime.now()
+    now = datetime.now(KST)
     time_str = now.strftime("%H:%M")
 
     existing = (
@@ -79,7 +81,7 @@ def check_out(user=Depends(get_current_user)):
     """퇴실 체크아웃"""
     supabase = get_supabase()
     today = date.today().isoformat()
-    time_str = datetime.now().strftime("%H:%M")
+    time_str = datetime.now(KST).strftime("%H:%M")
 
     existing = (
         supabase.table("attendance")

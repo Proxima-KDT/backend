@@ -224,6 +224,12 @@ class CounselingRecordResponse(BaseModel):
     summary: Optional[str] = None
     action_items: List[str] = []
     speakers: List[str] = []
+    audio_url: Optional[str] = None
+    note: Optional[str] = None
+
+
+class CounselingNoteUpdate(BaseModel):
+    note: str
 
 
 # ── Q&A ───────────────────────────────────────────

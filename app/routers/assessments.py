@@ -77,9 +77,7 @@ async def submit_assessment(
 ):
     """평가 제출 (파일 업로드)"""
     supabase = get_supabase()
-    from datetime import datetime
-
-    # URL path는 str이지만 DB의 assessment_id는 INTEGER
+    from datetime import datetime, timezone
     try:
         assessment_id_int = int(assessment_id)
     except ValueError:
@@ -108,7 +106,7 @@ async def submit_assessment(
         supabase.storage.from_("uploads").upload(path, contents, {"content-type": file.content_type or "application/octet-stream"})
         uploaded_files.append({"name": file.filename, "path": path})
 
-    now_str = datetime.now().isoformat()
+    now_str = datetime.now(timezone.utc).isoformat()
 
     # 학생 이름 조회
     user_res = supabase.table("users").select("name").eq("id", user["id"]).execute()

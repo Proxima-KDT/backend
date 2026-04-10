@@ -67,6 +67,16 @@ class EquipmentHistoryItem(BaseModel):
     note: Optional[str] = None
 
 
+class EquipmentSession(BaseModel):
+    """대여·반납을 하나의 세션으로 묶은 응답"""
+    user_name: Optional[str] = None
+    borrow_at: Optional[str] = None   # ISO datetime — 대여 시각
+    return_at: Optional[str] = None   # ISO datetime — 반납 시각 (None = 대여중)
+    is_active: bool = False            # 현재 대여 중 (반납 로그 없음)
+    note: Optional[str] = None
+    action: str = "borrow"            # borrow | maintenance | status_change
+
+
 # ── 시설 예약 관리 ─────────────────────────────────
 
 class AdminRoomResponse(BaseModel):

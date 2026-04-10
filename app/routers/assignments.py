@@ -81,7 +81,7 @@ async def submit_assignment(
 ):
     """과제 파일 제출"""
     supabase = get_supabase()
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     # URL path는 str이지만 DB의 assignment_id는 INTEGER
     try:
@@ -113,7 +113,7 @@ async def submit_assignment(
         )
         uploaded_files.append({"name": file.filename, "path": path})
 
-    now_str = datetime.now().isoformat()
+    now_str = datetime.now(timezone.utc).isoformat()
 
     # 학생 이름 조회
     user_res = supabase.table("users").select("name").eq("id", user["id"]).execute()

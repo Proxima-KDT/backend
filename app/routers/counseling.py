@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/counseling", tags=["counseling"])
 
 ROLE_LABEL_MAP = {
     "teacher": "강사",
-    "admin": "매니저",
+    "admin": "멘토",
 }
 
 ALL_TIME_SLOTS = [
@@ -95,7 +95,7 @@ def get_counseling_slots(
     booked_by_date: dict = {}
     for b in (booked_res.data or []):
         d = b["date"]
-        booked_by_date.setdefault(d, set()).add(b["time"])
+        booked_by_date.setdefault(d, set()).add(b["time"][:5])  # HH:MM:SS → HH:MM
 
     # 날짜별 결과 생성
     import calendar
@@ -211,7 +211,7 @@ def book_counseling(body: CounselingBookRequest, user=Depends(get_current_user))
         student_id=str(b.get("student_id", "")),
         student_name=b.get("student_name"),
         date=b["date"],
-        time=b["time"],
+        time=b["time"][:5],  # HH:MM:SS → HH:MM
         reason=b.get("reason"),
         status=b["status"],
     )
@@ -241,7 +241,7 @@ def my_bookings(user=Depends(get_current_user)):
             student_id=str(b.get("student_id", "")),
             student_name=b.get("student_name"),
             date=b["date"],
-            time=b["time"],
+            time=b["time"][:5],  # HH:MM:SS → HH:MM
             reason=b.get("reason"),
             status=b["status"],
         )

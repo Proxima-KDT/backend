@@ -116,6 +116,19 @@ def create_reservation(body: ReservationCreateRequest, user=Depends(get_current_
     if conflict_res.data:
         raise HTTPException(status_code=409, detail="해당 시간대에 이미 예약이 있습니다.")
 
+    # 당일 예약 3건 제한
+    daily_count_res = (
+        supabase.table("room_reservations")
+        .select("id", count="exact")
+        .eq("user_id", user["id"])
+        .eq("date", body.date)
+        .neq("status", "cancelled")
+        .execute()
+    )
+    daily_count = daily_count_res.count or 0
+    if daily_count >= 3:
+        raise HTTPException(status_code=409, detail="하루 최대 3건까지만 예약할 수 있습니다.")
+
     # 방 정보 조회 (insert 시 비정규화 컬럼에 함께 저장)
     room_res = (
         supabase.table("rooms").select("name, type").eq("id", body.room_id).maybe_single().execute()

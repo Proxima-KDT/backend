@@ -122,7 +122,7 @@ async def process_answer(session_id: str, answer: str) -> dict:
     }
 
 
-async def end_interview(session_id: str) -> dict:
+async def end_interview(session_id: str, user_id: str) -> dict:
     session = _sessions.get(session_id)
     if not session:
         raise ValueError("세션을 찾을 수 없습니다.")
@@ -156,6 +156,44 @@ async def end_interview(session_id: str) -> dict:
             "summary": "면접이 완료되었습니다. 상세 분석을 생성하는 중 오류가 발생했습니다.",
             "improvements": ["답변을 더 구체적으로 작성해보세요.", "예시를 들어 설명해보세요.", "경험과 연결지어 답변해보세요."],
         }
+
+    total_score = report.get("total_score", 0)
+
+    # mock_interviews 테이블에 저장 + skill_scores.ai_interview 업데이트
+    try:
+        from app.utils.supabase_client import get_supabase
+        supabase = get_supabase()
+
+        supabase.table("mock_interviews").insert({
+            "user_id": user_id,
+            "company": session["company"],
+            "position": session["position"],
+            "interview_type": session["interview_type"],
+            "questions": [qa["question"] for qa in session["qa_pairs"]],
+            "answers": [qa["answer"] for qa in session["qa_pairs"]],
+            "report": report,
+            "score": total_score,
+        }).execute()
+
+        # 최근 5회 면접 점수 평균으로 ai_interview 업데이트
+        recent = (
+            supabase.table("mock_interviews")
+            .select("score")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .limit(5)
+            .execute()
+        )
+        scores = [r["score"] for r in (recent.data or []) if r.get("score") is not None]
+        if scores:
+            avg_score = round(sum(scores) / len(scores))
+            supabase.table("skill_scores").upsert(
+                {"user_id": user_id, "ai_interview": avg_score},
+                on_conflict="user_id",
+            ).execute()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("면접 결과 저장 실패: %s", e)
 
     # 세션 정리 (메모리 절약)
     _sessions.pop(session_id, None)

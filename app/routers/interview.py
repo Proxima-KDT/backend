@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from app.schemas.interview import (
     InterviewStartRequest,
     InterviewStartResponse,
@@ -8,6 +8,7 @@ from app.schemas.interview import (
     InterviewReport,
 )
 from app.services import interview_service
+from app.dependencies import get_current_user
 
 router = APIRouter(prefix="/api/interview", tags=["interview"])
 
@@ -19,14 +20,14 @@ async def get_options():
 
 
 @router.post("/start", response_model=InterviewStartResponse)
-async def start_interview(body: InterviewStartRequest):
+async def start_interview(body: InterviewStartRequest, user=Depends(get_current_user)):
     """면접 세션 시작 및 첫 번째 질문 반환"""
     try:
         result = await interview_service.start_interview(
             company=body.company,
             position=body.position,
             interview_type=body.interview_type,
-            user_id="anonymous",  # TODO: get_current_user 연동 후 교체
+            user_id=user["id"],
         )
         return result
     except Exception as e:
@@ -34,7 +35,7 @@ async def start_interview(body: InterviewStartRequest):
 
 
 @router.post("/answer", response_model=InterviewAnswerResponse)
-async def submit_answer(body: InterviewAnswerRequest):
+async def submit_answer(body: InterviewAnswerRequest, user=Depends(get_current_user)):
     """답변 제출 후 다음 질문 반환"""
     try:
         result = await interview_service.process_answer(
@@ -49,10 +50,13 @@ async def submit_answer(body: InterviewAnswerRequest):
 
 
 @router.post("/end", response_model=InterviewReport)
-async def end_interview(body: InterviewEndRequest):
+async def end_interview(body: InterviewEndRequest, user=Depends(get_current_user)):
     """면접 종료 및 평가 리포트 반환"""
     try:
-        report = await interview_service.end_interview(session_id=body.session_id)
+        report = await interview_service.end_interview(
+            session_id=body.session_id,
+            user_id=user["id"],
+        )
         return report
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

@@ -1,5 +1,4 @@
-﻿from datetime import date
-from typing import List, Optional
+﻿from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Query
 from app.dependencies import get_current_user
 from app.utils.supabase_client import get_supabase
@@ -41,6 +40,22 @@ def list_equipment(
     ]
 
 
+@router.get("/my-requests")
+def get_my_requests(user=Depends(get_current_user)):
+    """현재 사용자의 pending 대여 신청 목록 (equipment_id 리스트 반환)"""
+    supabase = get_supabase()
+
+    res = (
+        supabase.table("equipment_requests")
+        .select("equipment_id")
+        .eq("user_id", user["id"])
+        .eq("status", "pending")
+        .execute()
+    )
+    pending_ids = [r["equipment_id"] for r in (res.data or [])]
+    return {"pending_equipment_ids": pending_ids}
+
+
 @router.post("/{equipment_id}/borrow", response_model=EquipmentActionResponse)
 def borrow_equipment(
     equipment_id: int, body: EquipmentBorrowRequest, user=Depends(get_current_user)
@@ -65,6 +80,18 @@ def borrow_equipment(
             detail=f"현재 대여할 수 없는 장비입니다. (상태: {equipment['status']})",
         )
 
+    # 이미 pending 요청이 있는지 확인
+    existing = (
+        supabase.table("equipment_requests")
+        .select("id")
+        .eq("equipment_id", equipment_id)
+        .eq("user_id", user["id"])
+        .eq("status", "pending")
+        .execute()
+    )
+    if existing.data:
+        raise HTTPException(status_code=409, detail="이미 대여 신청 중인 장비입니다.")
+
     # 사용자 이름 조회
     user_res = (
         supabase.table("users")
@@ -74,18 +101,7 @@ def borrow_equipment(
     )
     borrower_name = user_res.data[0]["name"] if user_res.data else user.get("email", "")
 
-    today = date.today().isoformat()
-
-    supabase.table("equipment").update(
-        {
-            "status": "borrowed",
-            "borrower_id": user["id"],
-            "borrower_name": borrower_name,
-            "borrowed_at": today,
-        }
-    ).eq("id", equipment_id).execute()
-
-    # 대여 요청 기록
+    # 대여 요청 등록 (pending) — 장비 상태는 관리자 승인 후 변경
     supabase.table("equipment_requests").insert(
         {
             "equipment_id": equipment_id,
@@ -93,24 +109,14 @@ def borrow_equipment(
             "user_id": user["id"],
             "student_name": borrower_name,
             "reason": body.reason,
-            "status": "approved",
-        }
-    ).execute()
-
-    # 장비 로그 기록
-    supabase.table("equipment_logs").insert(
-        {
-            "equipment_id": equipment_id,
-            "user_id": user["id"],
-            "action": "borrow",
-            "note": body.reason,
+            "status": "pending",
         }
     ).execute()
 
     return EquipmentActionResponse(
         id=equipment_id,
-        status="borrowed",
-        message=f"'{equipment['name']}' 대여가 완료되었습니다.",
+        status="pending",
+        message=f"'{equipment['name']}' 대여 신청이 접수되었습니다. 관리자 승인 후 대여가 확정됩니다.",
     )
 
 

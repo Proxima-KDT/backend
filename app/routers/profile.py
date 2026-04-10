@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from app.dependencies import get_current_user
 from app.utils.supabase_client import get_supabase
@@ -69,26 +70,98 @@ async def upload_avatar(file: UploadFile = File(...), user=Depends(get_current_u
 
 @router.get("/skill-scores", response_model=SkillScoreResponse)
 def get_skill_scores(user=Depends(get_current_user)):
-    """레이더 차트용 스킬 점수 조회 (5축)"""
+    """레이더 차트용 스킬 점수 조회 (5축) — 출석률은 실제 기록으로 동적 계산"""
     supabase = get_supabase()
 
+    # skill_scores 조회
     res = (
         supabase.table("skill_scores")
         .select("*")
         .eq("user_id", user["id"])
         .execute()
     )
-    if not res.data:
-        return SkillScoreResponse()
+    s = res.data[0] if res.data else {}
 
-    s = res.data[0]
+    # 출석률을 실제 attendance 기록에서 동적 계산
+    today = date.today()
+    cur_res = (
+        supabase.table("curriculum")
+        .select("start_date")
+        .eq("phase", 1)
+        .execute()
+    )
+    if cur_res.data:
+        training_start = date.fromisoformat(str(cur_res.data[0]["start_date"]))
+    else:
+        training_start = today
+
+    # 훈련 시작일~오늘 평일 수 계산
+    total_weekdays = sum(
+        1 for i in range((today - training_start).days + 1)
+        if (training_start + timedelta(days=i)).weekday() < 5
+    )
+
+    att_res = (
+        supabase.table("attendance")
+        .select("status")
+        .eq("user_id", user["id"])
+        .gte("date", training_start.isoformat())
+        .lte("date", today.isoformat())
+        .execute()
+    )
+    att_records = att_res.data or []
+    attended = sum(1 for r in att_records if r.get("status") in ("present", "late"))
+    attendance_score = round((attended / total_weekdays) * 100) if total_weekdays > 0 else 0
+
+    # ai_speaking: voice_feedbacks 최근 10회 평균
+    speaking_res = (
+        supabase.table("voice_feedbacks")
+        .select("score")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(10)
+        .execute()
+    )
+    speaking_scores = [r["score"] for r in (speaking_res.data or []) if r.get("score") is not None]
+    ai_speaking = round(sum(speaking_scores) / len(speaking_scores)) if speaking_scores else 0
+
+    # ai_interview: mock_interviews 최근 5회 평균
+    interview_res = (
+        supabase.table("mock_interviews")
+        .select("score")
+        .eq("user_id", user["id"])
+        .order("created_at", desc=True)
+        .limit(5)
+        .execute()
+    )
+    interview_scores = [r["score"] for r in (interview_res.data or []) if r.get("score") is not None]
+    ai_interview = round(sum(interview_scores) / len(interview_scores)) if interview_scores else 0
+
+    portfolio = s.get("portfolio", 0)
+    project_assignment_exam = s.get("project_assignment_exam", 0)
+
+    # overall_score: 5축 평균으로 동적 계산
+    overall_score = round(
+        (attendance_score + ai_speaking + ai_interview + portfolio + project_assignment_exam) / 5
+    )
+
+    # tier 기준: Beginner < 40, Intermediate 40~69, Advanced 70~89, Master 90+
+    if overall_score >= 90:
+        tier = "Master"
+    elif overall_score >= 70:
+        tier = "Advanced"
+    elif overall_score >= 40:
+        tier = "Intermediate"
+    else:
+        tier = "Beginner"
+
     return SkillScoreResponse(
-        attendance=s.get("attendance", 0),
-        ai_speaking=s.get("ai_speaking", 0),
-        ai_interview=s.get("ai_interview", 0),
-        portfolio=s.get("portfolio", 0),
-        project_assignment_exam=s.get("project_assignment_exam", 0),
-        overall_score=s.get("overall_score", 0),
-        tier=s.get("tier", "Beginner"),
+        attendance=attendance_score,
+        ai_speaking=ai_speaking,
+        ai_interview=ai_interview,
+        portfolio=portfolio,
+        project_assignment_exam=project_assignment_exam,
+        overall_score=overall_score,
+        tier=tier,
     )
 

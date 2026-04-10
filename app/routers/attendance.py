@@ -57,17 +57,21 @@ def check_in(body: CheckInRequest, user=Depends(get_current_user)):
     if existing.data:
         raise HTTPException(status_code=409, detail="이미 오늘 출석 체크인이 완료되었습니다.")
 
+    # 09:10 기준으로 출석/지각 판정
+    late_limit = CHECKIN_LATE_HOUR * 60 + CHECKIN_LATE_MINUTE
+    status = "late" if (now.hour * 60 + now.minute) > late_limit else "present"
+
     payload = {
         "user_id": user["id"],
         "date": today,
         "check_in_time": time_str,
-        "status": "checked_in",
+        "status": status,
     }
     if body.signature_url:
         payload["signature_image"] = body.signature_url
 
     supabase.table("attendance").insert(payload).execute()
-    return {"message": "입실 완료", "status": "checked_in", "time": time_str}
+    return {"message": "입실 완료", "status": status, "time": time_str}
 
 
 @router.post("/check-out")
@@ -90,11 +94,8 @@ def check_out(user=Depends(get_current_user)):
     if rec.get("check_out_time"):
         raise HTTPException(status_code=409, detail="이미 퇴실 처리되었습니다.")
 
-    # 퇴실 시 최종 출결 상태 결정 (체크인 시각 기준)
-    check_in_time = rec.get("check_in_time", "09:00")
-    h, m = map(int, check_in_time.split(":"))
-    late_limit = CHECKIN_LATE_HOUR * 60 + CHECKIN_LATE_MINUTE
-    final_status = "late" if (h * 60 + m) > late_limit else "present"
+    # 체크인 시 이미 출석/지각 판정이 완료되어 있으므로 기존 status 유지
+    final_status = rec.get("status", "present")
 
     supabase.table("attendance").update(
         {"check_out_time": time_str, "status": final_status}

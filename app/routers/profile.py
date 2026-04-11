@@ -23,6 +23,38 @@ def get_my_profile(user=Depends(get_current_user)):
 
     p = res.data[0]
 
+    # 교과 과정 정보 조회 (cohort_id → cohorts, course_id → courses)
+    course_name = None
+    cohort_number = None
+    course_start_date = None
+    course_end_date = None
+
+    cohort_id = p.get("cohort_id")
+    course_id = p.get("course_id")
+
+    if cohort_id:
+        cohort_res = (
+            supabase.table("cohorts")
+            .select("cohort_number, start_date, end_date")
+            .eq("id", cohort_id)
+            .execute()
+        )
+        if cohort_res.data:
+            c = cohort_res.data[0]
+            cohort_number = c.get("cohort_number")
+            course_start_date = str(c["start_date"]) if c.get("start_date") else None
+            course_end_date = str(c["end_date"]) if c.get("end_date") else None
+
+    if course_id:
+        course_res = (
+            supabase.table("courses")
+            .select("name")
+            .eq("id", course_id)
+            .execute()
+        )
+        if course_res.data:
+            course_name = course_res.data[0].get("name")
+
     return ProfileResponse(
         id=str(p["id"]),
         name=p.get("name", ""),
@@ -32,6 +64,10 @@ def get_my_profile(user=Depends(get_current_user)):
         target_jobs=p.get("target_jobs") or [],
         overall_score=p.get("overall_score", 0),
         tier=p.get("tier", "Beginner"),
+        course_name=course_name,
+        cohort_number=cohort_number,
+        course_start_date=course_start_date,
+        course_end_date=course_end_date,
     )
 
 

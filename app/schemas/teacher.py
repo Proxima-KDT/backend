@@ -48,6 +48,10 @@ class TeacherCourseResponse(BaseModel):
     name: str
     track_type: str  # 'main' | 'sub'
     classroom: Optional[str] = None
+    duration_months: Optional[int] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    cohort_number: Optional[int] = None
 
 
 class StudentNoteUpdate(BaseModel):

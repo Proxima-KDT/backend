@@ -27,6 +27,7 @@ from app.routers import (
     rooms,
     profile,
     skills,
+    ai_agent,
 )
 
 settings = get_settings()
@@ -68,6 +69,7 @@ app.include_router(skills.router)
 app.include_router(teacher.router)
 app.include_router(admin.router)
 app.include_router(counseling_manage.router)
+app.include_router(ai_agent.router)
 
 
 @app.get("/")

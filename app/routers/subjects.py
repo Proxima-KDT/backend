@@ -101,6 +101,7 @@ def get_subjects(user=Depends(get_current_user)):
                 phase=subject.get("phase"),
                 concepts=subject_concepts,
                 progress=ProgressData(solved=solved, total=total, percent=percent),
+                course_tags=subject.get("course_tags") or [],
             )
         )
     return result
@@ -198,6 +199,7 @@ def get_subject_detail(subject_id: str, user=Depends(get_current_user)):
         icon=subject.get("icon"),
         color=subject.get("color"),
         phase=subject.get("phase"),
+        course_tags=subject.get("course_tags") or [],
         concepts=subject_concepts,
     )
 

@@ -11,6 +11,10 @@ class ProfileResponse(BaseModel):
     target_jobs: List[str] = []
     overall_score: int = 0
     tier: str = "Beginner"
+    course_name: Optional[str] = None
+    cohort_number: Optional[int] = None
+    course_start_date: Optional[str] = None
+    course_end_date: Optional[str] = None
 
 
 class ProfileUpdateTargetJobs(BaseModel):

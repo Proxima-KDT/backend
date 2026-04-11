@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"python -m py_compile app/services/ai_agent_workflow.py 2>&1 && echo \\\"COMPILE_OK\\\" && wc -l app/services/ai_agent_workflow.py && python -c \\\"\\nfrom app.services import ai_agent_workflow as...",
+  "error": "Exit code 1\nCOMPILE_OK\n782 app/services/ai_agent_workflow.py\nTraceback (most recent call last):\r\n  File \"<string>\", line 8, in <module>\r\n  File \"C:\\heewon\\vibe_coding\\backend\\app\\services\\ai_agent_workflow.py\", line 541, in get_proactive_alert_graph\r\n    g.add_node(\"draft_notifications\", node_proactive_draft_notifications)\r\n  File \"C:\\Users\\gmldn\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\langgraph\\graph\\state.py\", line 341, in add_node\r\n    raise ValueError(f\"'{node}' is already ...",
+  "timestamp": "2026-04-11T09:34:53.922Z",
+  "retry_count": 1
+}

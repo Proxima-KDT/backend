@@ -52,20 +52,36 @@ async def list_my_courses(user=Depends(get_current_teacher)):
 
     res = (
         supabase.table("courses")
-        .select("id,name,track_type,classroom")
+        .select("id,name,track_type,classroom,duration_months")
         .in_("id", course_ids)
         .order("track_type")
         .order("name")
         .execute()
     )
+    courses = res.data or []
+
+    # 진행중 기수의 날짜 가져오기
+    cohort_res = (
+        supabase.table("cohorts")
+        .select("course_id,cohort_number,start_date,end_date")
+        .in_("course_id", course_ids)
+        .eq("status", "in_progress")
+        .execute()
+    )
+    cohort_map = {c["course_id"]: c for c in (cohort_res.data or [])}
+
     return [
         TeacherCourseResponse(
             id=c["id"],
             name=c["name"],
             track_type=c["track_type"],
             classroom=c.get("classroom"),
+            duration_months=c.get("duration_months"),
+            start_date=cohort_map[c["id"]]["start_date"] if c["id"] in cohort_map else None,
+            end_date=cohort_map[c["id"]]["end_date"] if c["id"] in cohort_map else None,
+            cohort_number=cohort_map[c["id"]]["cohort_number"] if c["id"] in cohort_map else None,
         )
-        for c in (res.data or [])
+        for c in courses
     ]
 
 

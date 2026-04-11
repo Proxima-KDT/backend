@@ -1,0 +1,75 @@
+# ================================================================
+# EduPilot Backend .dockerignore
+#
+# 이미지 크기와 보안을 위해 다음은 절대 이미지에 포함시키지 않는다:
+#  - 시크릿(.env, 키 파일)
+#  - 개발/테스트 아티팩트
+#  - VCS 메타데이터
+#  - 로컬 가상환경
+# ================================================================
+
+# ----- 시크릿 (절대 포함 금지) -----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+
+# ----- Python 캐시 / 가상환경 -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+
+# ----- 테스트 / 커버리지 -----
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# ----- 타입 체커 / 린터 캐시 -----
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+
+# ----- IDE / OS -----
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ----- VCS -----
+.git/
+.gitignore
+.gitattributes
+
+# ----- 문서 / 마크다운 (런타임에 필요 없음) -----
+README.md
+*.md
+docs/
+
+# ----- Docker 메타 -----
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# ----- 로그 -----
+*.log
+logs/

@@ -40,6 +40,7 @@ class SubjectResponse(BaseModel):
     phase: Optional[int]
     concepts: List[ConceptResponse] = []
     progress: Optional[ProgressData] = None
+    course_tags: Optional[List[str]] = None
 
 
 class SubjectProgressResponse(BaseModel):

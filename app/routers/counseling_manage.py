@@ -43,12 +43,20 @@ def get_counseling_schedule(
         .order("time")
         .execute()
     )
+    bookings_raw = bookings_res.data or []
+
+    # 배지용 course_name 맵 빌드 (student_id → course_id → course.name)
+    course_name_by_student = _build_course_name_map(
+        supabase, [b.get("student_id") for b in bookings_raw if b.get("student_id")]
+    )
+
     bookings = []
-    for b in (bookings_res.data or []):
+    for b in bookings_raw:
         bookings.append({
             "id": str(b["id"]),
             "student_id": str(b.get("student_id", "")),
             "student_name": b.get("student_name"),
+            "course_name": course_name_by_student.get(b.get("student_id")),
             "counselor_id": str(b.get("counselor_id", "")),
             "counselor_name": b.get("counselor_name"),
             "date": b["date"],
@@ -155,11 +163,16 @@ def list_manage_bookings(
     res = query.execute()
     bookings = res.data or []
 
+    course_name_by_student = _build_course_name_map(
+        supabase, [b.get("student_id") for b in bookings if b.get("student_id")]
+    )
+
     return [
         CounselingBookingResponse(
             id=str(b["id"]),
             student_id=str(b.get("student_id", "")),
             student_name=b.get("student_name"),
+            course_name=course_name_by_student.get(b.get("student_id")),
             date=b["date"],
             time=b.get("time", ""),
             duration=b.get("duration", 30),
@@ -220,3 +233,32 @@ def get_blocked_slots(date_str: str, user=Depends(get_teacher_or_admin)):
 
     blocked = [normalize_time(s["time"]) for s in (res.data or [])]
     return blocked
+
+
+# ═══════════════════════════════════════════════════
+# 헬퍼
+# ═══════════════════════════════════════════════════
+
+def _build_course_name_map(supabase, student_ids: List[str]) -> Dict[str, Optional[str]]:
+    """student_id 목록 → {student_id: course_name | None} 맵. 배지 렌더용."""
+    ids = [sid for sid in student_ids if sid]
+    if not ids:
+        return {}
+    stu_res = (
+        supabase.table("users")
+        .select("id,course_id")
+        .in_("id", ids)
+        .execute()
+    )
+    stu_course = {u["id"]: u.get("course_id") for u in (stu_res.data or [])}
+    course_ids = list({cid for cid in stu_course.values() if cid})
+    if not course_ids:
+        return {sid: None for sid in ids}
+    c_res = (
+        supabase.table("courses")
+        .select("id,name")
+        .in_("id", course_ids)
+        .execute()
+    )
+    name_by_course = {c["id"]: c["name"] for c in (c_res.data or [])}
+    return {sid: name_by_course.get(stu_course.get(sid)) for sid in ids}

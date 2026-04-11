@@ -6,6 +6,7 @@ class CounselingBookingResponse(BaseModel):
     id: str
     student_id: Optional[str] = None
     student_name: Optional[str] = None
+    course_name: Optional[str] = None
     date: str
     time: str
     duration: Optional[int] = 30

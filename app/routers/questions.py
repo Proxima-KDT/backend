@@ -11,16 +11,32 @@ router = APIRouter(prefix="/api/questions", tags=["questions"])
 
 @router.get("", response_model=List[QuestionResponse])
 def list_questions(user=Depends(get_current_user)):
-    """질문 목록 조회 (익명 포함)"""
+    """질문 목록 조회 (익명 포함) — 작성자의 수강 과정명 배지 포함."""
     supabase = get_supabase()
 
     res = (
         supabase.table("questions")
-        .select("*, users(name)")
+        .select("*, users(name, course_id)")
         .order("created_at", desc=True)
         .execute()
     )
     questions = res.data or []
+
+    # course_id → course.name 맵 (배지 렌더용)
+    course_ids = list({
+        (q.get("users") or {}).get("course_id")
+        for q in questions
+        if isinstance(q.get("users"), dict) and (q.get("users") or {}).get("course_id")
+    })
+    course_name_map: dict = {}
+    if course_ids:
+        c_res = (
+            supabase.table("courses")
+            .select("id,name")
+            .in_("id", course_ids)
+            .execute()
+        )
+        course_name_map = {c["id"]: c["name"] for c in (c_res.data or [])}
 
     result = []
     for q in questions:
@@ -33,6 +49,10 @@ def list_questions(user=Depends(get_current_user)):
             joined_name = user_data.get("name") if isinstance(user_data, dict) else None
             author = stored_author or joined_name
 
+        course_name = None
+        if isinstance(user_data, dict):
+            course_name = course_name_map.get(user_data.get("course_id"))
+
         result.append(
             QuestionResponse(
                 id=str(q["id"]),
@@ -40,6 +60,7 @@ def list_questions(user=Depends(get_current_user)):
                 content=q["content"],
                 is_anonymous=q.get("is_anonymous", False),
                 author=author,
+                course_name=course_name,
                 created_at=q.get("created_at", ""),
                 answer=q.get("answer"),
                 answered_at=q.get("answered_at"),

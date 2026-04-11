@@ -5,11 +5,13 @@ from app.dependencies import get_current_teacher
 from app.utils.supabase_client import get_supabase
 from app.schemas.teacher import (
     TeacherStudentResponse,
+    TeacherCourseResponse,
     StudentFile,
     StudentNoteUpdate,
     AttendanceWeekRecord,
     ClassroomSeatResponse,
     SeatAssignRequest,
+    SeatInitRequest,
     DailyAttendanceRecord,
     AttendanceStatusUpdate,
     TeacherAssignmentResponse,
@@ -36,19 +38,63 @@ router = APIRouter(prefix="/api/teacher", tags=["teacher"])
 
 
 # ═══════════════════════════════════════════════════
+# 0. 강사 담당 과정 (드롭다운)
+# ═══════════════════════════════════════════════════
+
+
+@router.get("/courses", response_model=List[TeacherCourseResponse])
+async def list_my_courses(user=Depends(get_current_teacher)):
+    """현재 로그인한 강사가 담당하는 과정 목록 — 사이드바 드롭다운용."""
+    supabase = get_supabase()
+    course_ids = _get_teacher_course_ids(supabase, user["id"])
+    if not course_ids:
+        return []
+
+    res = (
+        supabase.table("courses")
+        .select("id,name,track_type,classroom")
+        .in_("id", course_ids)
+        .order("track_type")
+        .order("name")
+        .execute()
+    )
+    return [
+        TeacherCourseResponse(
+            id=c["id"],
+            name=c["name"],
+            track_type=c["track_type"],
+            classroom=c.get("classroom"),
+        )
+        for c in (res.data or [])
+    ]
+
+
+# ═══════════════════════════════════════════════════
 # 1. 학생 관리
 # ═══════════════════════════════════════════════════
 
 
 @router.get("/students", response_model=List[TeacherStudentResponse])
-async def list_students(user=Depends(get_current_teacher)):
-    """강사 대시보드 — 전체 학생 목록 (출석률, 제출률, 스킬 등) — N+1 방지: 배치 쿼리"""
+async def list_students(
+    course_id: Optional[str] = Query(None),
+    user=Depends(get_current_teacher),
+):
+    """강사 대시보드 — 담당 과정 학생 목록 (출석률, 제출률, 스킬 등) — N+1 방지: 배치 쿼리.
+
+    course_id 쿼리 파라미터가 지정되면 해당 과정 학생만, 없으면 강사가 담당하는 모든 과정의 학생.
+    """
     supabase = get_supabase()
+
+    # 강사가 담당하는 course_id 목록 (course_id 파라미터가 있으면 권한 검증 후 단일로 좁힘)
+    course_ids = _get_teacher_course_ids(supabase, user["id"], course_id)
+    if not course_ids:
+        return []
 
     profiles_res = (
         supabase.table("users")
         .select("*")
         .eq("role", "student")
+        .in_("course_id", course_ids)
         .order("name")
         .execute()
     )
@@ -56,6 +102,28 @@ async def list_students(user=Depends(get_current_teacher)):
 
     if not students:
         return []
+
+    # course/cohort 이름 일괄 조회 (배지/응답용)
+    distinct_course_ids = list({s["course_id"] for s in students if s.get("course_id")})
+    distinct_cohort_ids = list({s["cohort_id"] for s in students if s.get("cohort_id")})
+    course_name_map: dict = {}
+    if distinct_course_ids:
+        courses_res = (
+            supabase.table("courses")
+            .select("id,name")
+            .in_("id", distinct_course_ids)
+            .execute()
+        )
+        course_name_map = {c["id"]: c["name"] for c in (courses_res.data or [])}
+    cohort_num_map: dict = {}
+    if distinct_cohort_ids:
+        cohorts_res = (
+            supabase.table("cohorts")
+            .select("id,cohort_number")
+            .in_("id", distinct_cohort_ids)
+            .execute()
+        )
+        cohort_num_map = {c["id"]: c["cohort_number"] for c in (cohorts_res.data or [])}
 
     student_ids = [s["id"] for s in students]
 
@@ -117,6 +185,10 @@ async def list_students(user=Depends(get_current_teacher)):
                 enrolled_at=s.get("created_at", "")[:10] if s.get("created_at") else None,
                 skills=skills_by_user.get(uid, {}),
                 files=files_by_user.get(uid, []),
+                course_id=s.get("course_id"),
+                course_name=course_name_map.get(s.get("course_id")),
+                cohort_id=s.get("cohort_id"),
+                cohort_number=cohort_num_map.get(s.get("cohort_id")),
             )
         )
     return result
@@ -138,6 +210,30 @@ async def get_student_detail(student_id: str, user=Depends(get_current_teacher))
 
     s = profile_res.data[0] if isinstance(profile_res.data, list) else profile_res.data
     uid = s["id"]
+
+    # course/cohort 메타 (배지 및 상세 렌더용)
+    course_name = None
+    cohort_number = None
+    if s.get("course_id"):
+        c_res = (
+            supabase.table("courses")
+            .select("name")
+            .eq("id", s["course_id"])
+            .limit(1)
+            .execute()
+        )
+        if c_res.data:
+            course_name = c_res.data[0].get("name")
+    if s.get("cohort_id"):
+        co_res = (
+            supabase.table("cohorts")
+            .select("cohort_number")
+            .eq("id", s["cohort_id"])
+            .limit(1)
+            .execute()
+        )
+        if co_res.data:
+            cohort_number = co_res.data[0].get("cohort_number")
 
     # 스킬 5축 동적 계산 (profile/skill-scores와 동일 로직)
     from app.services.skill_service import calculate_student_skills
@@ -187,6 +283,10 @@ async def get_student_detail(student_id: str, user=Depends(get_current_teacher))
         notes=notes,
         skills=skills,
         files=files,
+        course_id=s.get("course_id"),
+        course_name=course_name,
+        cohort_id=s.get("cohort_id"),
+        cohort_number=cohort_number,
     )
 
 
@@ -271,11 +371,25 @@ async def update_student_notes(
 
 
 @router.get("/classroom/seats", response_model=List[ClassroomSeatResponse])
-async def get_classroom_seats(user=Depends(get_current_teacher)):
-    """교실 좌석 배치도 조회 — users 테이블 join으로 student_name 실시간 조회"""
+async def get_classroom_seats(
+    course_id: str = Query(..., description="조회할 과정 ID"),
+    user=Depends(get_current_teacher),
+):
+    """교실 좌석 배치도 조회 — 지정한 과정의 좌석만 반환."""
     supabase = get_supabase()
 
-    res = supabase.table("classroom_seats").select("*").order("row").order("col").execute()
+    # 권한: 본인이 담당하는 과정만 허용
+    if not _teacher_owns_course(supabase, user["id"], course_id):
+        raise HTTPException(status_code=403, detail="담당하지 않는 과정입니다.")
+
+    res = (
+        supabase.table("classroom_seats")
+        .select("*")
+        .eq("course_id", course_id)
+        .order("row")
+        .order("col")
+        .execute()
+    )
     seats = res.data or []
 
     # 배정된 학생 이름 일괄 조회 (N+1 방지)
@@ -295,6 +409,7 @@ async def get_classroom_seats(user=Depends(get_current_teacher)):
             seat_id=s["seat_id"],
             row=s["row"],
             col=s["col"],
+            course_id=s.get("course_id"),
             student_id=s.get("student_id"),
             student_name=student_names.get(s.get("student_id", "")),
         )
@@ -306,15 +421,35 @@ async def get_classroom_seats(user=Depends(get_current_teacher)):
 async def assign_seat(
     seat_id: str, body: SeatAssignRequest, user=Depends(get_current_teacher)
 ):
-    """좌석에 학생 배정 / 이동 / 해제 (드래그앤드롭 저장)"""
+    """좌석에 학생 배정 / 이동 / 해제 (드래그앤드롭 저장).
+
+    좌석은 과정에 귀속되므로:
+    - 대상 좌석이 강사의 담당 과정에 속하는지 확인
+    - 같은 과정 내에서만 학생 이동 허용 (다른 과정 좌석은 건드리지 않음)
+    """
     supabase = get_supabase()
 
-    # 같은 학생이 다른 자리에 이미 배정되어 있으면 먼저 해제
+    seat_res = (
+        supabase.table("classroom_seats")
+        .select("*")
+        .eq("seat_id", seat_id)
+        .execute()
+    )
+    if not seat_res.data:
+        raise HTTPException(status_code=404, detail="좌석을 찾을 수 없습니다.")
+    seat_row = seat_res.data[0]
+    seat_course_id = seat_row.get("course_id")
+
+    if not _teacher_owns_course(supabase, user["id"], seat_course_id):
+        raise HTTPException(status_code=403, detail="담당하지 않는 과정의 좌석입니다.")
+
+    # 같은 학생이 같은 과정 내 다른 자리에 이미 배정되어 있으면 먼저 해제
     if body.student_id:
         existing = (
             supabase.table("classroom_seats")
             .select("seat_id")
             .eq("student_id", body.student_id)
+            .eq("course_id", seat_course_id)
             .execute()
         )
         for prev in (existing.data or []):
@@ -323,7 +458,6 @@ async def assign_seat(
                     {"student_id": None}
                 ).eq("seat_id", prev["seat_id"]).execute()
 
-    # 목표 좌석 업데이트
     supabase.table("classroom_seats").update(
         {"student_id": body.student_id}
     ).eq("seat_id", seat_id).execute()
@@ -334,9 +468,6 @@ async def assign_seat(
         .eq("seat_id", seat_id)
         .execute()
     )
-    if not res.data:
-        raise HTTPException(status_code=404, detail="좌석을 찾을 수 없습니다.")
-
     s = res.data[0]
     student_name = None
     if s.get("student_id"):
@@ -352,39 +483,53 @@ async def assign_seat(
         seat_id=s["seat_id"],
         row=s["row"],
         col=s["col"],
+        course_id=s.get("course_id"),
         student_id=s.get("student_id"),
         student_name=student_name,
     )
 
 
 @router.post("/classroom/seats/init")
-async def init_classroom_seats(user=Depends(get_current_teacher)):
-    """빈 좌석 10개 초기화 (2열 × 5행) — 좌석이 하나도 없을 때만 실행"""
+async def init_classroom_seats(
+    body: SeatInitRequest,
+    user=Depends(get_current_teacher),
+):
+    """특정 과정의 빈 좌석을 초기화. 해당 과정의 기존 좌석은 전부 삭제 후 재생성."""
     supabase = get_supabase()
 
-    existing = supabase.table("classroom_seats").select("seat_id", count="exact").execute()
-    if (existing.count or 0) > 0:
-        return {"message": "이미 좌석이 설정되어 있습니다.", "count": existing.count}
+    if not _teacher_owns_course(supabase, user["id"], body.course_id):
+        raise HTTPException(status_code=403, detail="담당하지 않는 과정입니다.")
 
-    rows, cols = 5, 2
+    supabase.table("classroom_seats").delete().eq("course_id", body.course_id).execute()
+
+    rows, cols = body.rows, body.cols
     seats = [
         {
-            "seat_id": f"R{r}C{c}",
+            "seat_id": f"{body.course_id}-R{r}C{c}",
             "row": r,
             "col": c,
+            "course_id": body.course_id,
             "student_id": None,
         }
         for r in range(1, rows + 1)
         for c in range(1, cols + 1)
     ]
     supabase.table("classroom_seats").insert(seats).execute()
-    return {"message": f"좌석 {len(seats)}개가 초기화되었습니다.", "count": len(seats)}
+    return {"message": f"{body.course_id} 좌석 {len(seats)}개가 초기화되었습니다.", "count": len(seats)}
 
 
 @router.get("/attendance/{date_str}", response_model=List[DailyAttendanceRecord])
-async def get_daily_attendance(date_str: str, user=Depends(get_current_teacher)):
-    """일별 출석 현황 조회"""
+async def get_daily_attendance(
+    date_str: str,
+    course_id: Optional[str] = Query(None),
+    user=Depends(get_current_teacher),
+):
+    """일별 출석 현황 조회 — 담당 과정 학생만. course_id로 단일 과정 필터링 가능."""
     supabase = get_supabase()
+
+    course_ids = _get_teacher_course_ids(supabase, user["id"], course_id)
+    if not course_ids:
+        return []
 
     att_res = (
         supabase.table("attendance")
@@ -394,7 +539,9 @@ async def get_daily_attendance(date_str: str, user=Depends(get_current_teacher))
     )
     att_map = {a["user_id"]: a for a in (att_res.data or [])}
 
-    seats_res = supabase.table("classroom_seats").select("*").execute()
+    # 좌석도 과정 기준으로 필터 (같은 학생이 여러 과정에 좌석이 있을 가능성 방지)
+    seats_q = supabase.table("classroom_seats").select("*").in_("course_id", course_ids)
+    seats_res = seats_q.execute()
     seats_map = {}
     for seat in (seats_res.data or []):
         if seat.get("student_id"):
@@ -404,6 +551,7 @@ async def get_daily_attendance(date_str: str, user=Depends(get_current_teacher))
         supabase.table("users")
         .select("id, name")
         .eq("role", "student")
+        .in_("course_id", course_ids)
         .execute()
     )
 
@@ -430,8 +578,22 @@ async def update_attendance_status(
     body: AttendanceStatusUpdate,
     user=Depends(get_current_teacher),
 ):
-    """학생 출석 상태 수정"""
+    """학생 출석 상태 수정 — 담당 과정 학생만 허용."""
     supabase = get_supabase()
+
+    # 권한: 해당 학생이 강사의 담당 과정 소속인지 확인
+    stu_res = (
+        supabase.table("users")
+        .select("course_id")
+        .eq("id", student_id)
+        .limit(1)
+        .execute()
+    )
+    if not stu_res.data:
+        raise HTTPException(status_code=404, detail="학생을 찾을 수 없습니다.")
+    stu_course_id = stu_res.data[0].get("course_id")
+    if not _teacher_owns_course(supabase, user["id"], stu_course_id):
+        raise HTTPException(status_code=403, detail="담당하지 않는 과정의 학생입니다.")
 
     existing = (
         supabase.table("attendance")
@@ -462,8 +624,11 @@ async def update_attendance_status(
 
 
 @router.get("/assignments", response_model=List[TeacherAssignmentResponse])
-async def list_teacher_assignments(user=Depends(get_current_teacher)):
-    """과제 목록 + 학생 제출 현황"""
+async def list_teacher_assignments(
+    course_id: Optional[str] = Query(None),
+    user=Depends(get_current_teacher),
+):
+    """과제 목록 + 학생 제출 현황 — 담당 과정 학생만."""
     supabase = get_supabase()
 
     assignments_res = (
@@ -473,7 +638,7 @@ async def list_teacher_assignments(user=Depends(get_current_teacher)):
         .execute()
     )
     assignments = assignments_res.data or []
-    students = _get_all_students(supabase)
+    students = _get_teacher_students(supabase, user["id"], course_id)
 
     result = []
     for a in assignments:
@@ -571,8 +736,12 @@ async def create_assignment(body: AssignmentCreateRequest, user=Depends(get_curr
 
 
 @router.get("/assignments/{assignment_id}", response_model=TeacherAssignmentResponse)
-async def get_teacher_assignment_detail(assignment_id: str, user=Depends(get_current_teacher)):
-    """과제 상세 + 제출 현황"""
+async def get_teacher_assignment_detail(
+    assignment_id: str,
+    course_id: Optional[str] = Query(None),
+    user=Depends(get_current_teacher),
+):
+    """과제 상세 + 제출 현황 — 담당 과정 학생만."""
     supabase = get_supabase()
 
     a_res = (
@@ -584,8 +753,8 @@ async def get_teacher_assignment_detail(assignment_id: str, user=Depends(get_cur
     if not a_res.data:
         raise HTTPException(status_code=404, detail="과제를 찾을 수 없습니다.")
 
-    a = a_res.data
-    students = _get_all_students(supabase)
+    a = a_res.data[0] if isinstance(a_res.data, list) else a_res.data
+    students = _get_teacher_students(supabase, user["id"], course_id)
 
     subs_res = (
         supabase.table("assignment_submissions")
@@ -813,8 +982,11 @@ async def delete_assignment(assignment_id: str, user=Depends(get_current_teacher
 
 
 @router.get("/assessments", response_model=List[TeacherAssessmentResponse])
-async def list_teacher_assessments(user=Depends(get_current_teacher)):
-    """평가 목록 + 학생 제출 현황"""
+async def list_teacher_assessments(
+    course_id: Optional[str] = Query(None),
+    user=Depends(get_current_teacher),
+):
+    """평가 목록 + 학생 제출 현황 — 담당 과정 학생만."""
     supabase = get_supabase()
 
     assessments_res = (
@@ -824,7 +996,7 @@ async def list_teacher_assessments(user=Depends(get_current_teacher)):
         .execute()
     )
     assessments = assessments_res.data or []
-    students = _get_all_students(supabase)
+    students = _get_teacher_students(supabase, user["id"], course_id)
 
     result = []
     for a in assessments:
@@ -1278,7 +1450,7 @@ async def upload_counseling_audio(
 
 @router.get("/counseling-records", response_model=List[CounselingRecordResponse])
 async def list_counseling_records(user=Depends(get_current_teacher)):
-    """상담 기록 목록"""
+    """상담 기록 목록 — 담당 학생의 수강 과정명을 함께 반환(배지용)."""
     supabase = get_supabase()
 
     res = (
@@ -1290,10 +1462,34 @@ async def list_counseling_records(user=Depends(get_current_teacher)):
     )
     records = res.data or []
 
+    # course_name 배지용: student_id → course_id → course.name 맵 빌드
+    student_ids = list({r["student_id"] for r in records if r.get("student_id")})
+    student_course_map: dict = {}
+    course_name_map: dict = {}
+    if student_ids:
+        stu_res = (
+            supabase.table("users")
+            .select("id,course_id")
+            .in_("id", student_ids)
+            .execute()
+        )
+        student_course_map = {u["id"]: u.get("course_id") for u in (stu_res.data or [])}
+        distinct_course_ids = list({cid for cid in student_course_map.values() if cid})
+        if distinct_course_ids:
+            c_res = (
+                supabase.table("courses")
+                .select("id,name")
+                .in_("id", distinct_course_ids)
+                .execute()
+            )
+            course_name_map = {c["id"]: c["name"] for c in (c_res.data or [])}
+
     return [
         CounselingRecordResponse(
             id=str(r["id"]),
+            student_id=str(r["student_id"]) if r.get("student_id") else None,
             student_name=r.get("student_name"),
+            course_name=course_name_map.get(student_course_map.get(r.get("student_id"))),
             date=r.get("date", ""),
             duration=r.get("duration"),
             summary=r.get("summary"),
@@ -1343,12 +1539,12 @@ async def list_teacher_questions(
     filter: Optional[str] = Query(None),
     user=Depends(get_current_teacher),
 ):
-    """Q&A 목록 (전체/미답변/답변완료 필터)"""
+    """Q&A 목록 (전체/미답변/답변완료 필터) — 작성자의 수강 과정명 배지 포함."""
     supabase = get_supabase()
 
     query = (
         supabase.table("questions")
-        .select("*, users(name)")
+        .select("*, users(name, course_id)")
         .order("created_at", desc=True)
     )
 
@@ -1360,6 +1556,28 @@ async def list_teacher_questions(
     res = query.execute()
     questions = res.data or []
 
+    # course_id → course.name 맵
+    course_ids = list({
+        (q.get("users") or {}).get("course_id")
+        for q in questions
+        if isinstance(q.get("users"), dict) and (q.get("users") or {}).get("course_id")
+    })
+    course_name_map: dict = {}
+    if course_ids:
+        c_res = (
+            supabase.table("courses")
+            .select("id,name")
+            .in_("id", course_ids)
+            .execute()
+        )
+        course_name_map = {c["id"]: c["name"] for c in (c_res.data or [])}
+
+    def _course_name_for(q):
+        u = q.get("users") or {}
+        if not isinstance(u, dict):
+            return None
+        return course_name_map.get(u.get("course_id"))
+
     return [
         TeacherQuestionResponse(
             id=str(q["id"]),
@@ -1367,6 +1585,7 @@ async def list_teacher_questions(
             content=q["content"],
             is_anonymous=q.get("is_anonymous", False),
             author=None if q.get("is_anonymous") else (q.get("users", {}) or {}).get("name"),
+            course_name=_course_name_for(q),
             created_at=q.get("created_at", ""),
             answer=q.get("answer"),
             answered_at=q.get("answered_at"),
@@ -1404,12 +1623,54 @@ async def answer_question(
 # ═══════════════════════════════════════════════════
 
 
-def _get_all_students(supabase) -> list:
-    """전체 학생 목록 조회"""
+def _get_teacher_course_ids(
+    supabase, teacher_id: str, filter_course_id: Optional[str] = None
+) -> List[str]:
+    """강사의 담당 course_id 목록을 반환.
+
+    - filter_course_id 미지정: 담당 과정 전체 반환
+    - filter_course_id 지정 + 본인 담당: [filter_course_id]만 반환
+    - filter_course_id 지정 + 담당 아님: 빈 배열 (쿼리가 조용히 빈 결과를 내도록)
+    """
+    tc = (
+        supabase.table("teacher_courses")
+        .select("course_id")
+        .eq("teacher_id", teacher_id)
+        .execute()
+    )
+    all_ids = [r["course_id"] for r in (tc.data or [])]
+    if filter_course_id:
+        return [filter_course_id] if filter_course_id in all_ids else []
+    return all_ids
+
+
+def _teacher_owns_course(supabase, teacher_id: str, course_id: Optional[str]) -> bool:
+    """강사가 해당 course_id를 담당하는지 검사 (쓰기 API 권한 검증용)."""
+    if not course_id:
+        return False
+    res = (
+        supabase.table("teacher_courses")
+        .select("course_id")
+        .eq("teacher_id", teacher_id)
+        .eq("course_id", course_id)
+        .limit(1)
+        .execute()
+    )
+    return bool(res.data)
+
+
+def _get_teacher_students(
+    supabase, teacher_id: str, filter_course_id: Optional[str] = None
+) -> list:
+    """강사가 담당하는 과정 학생 목록. filter_course_id로 단일 과정 한정 가능."""
+    course_ids = _get_teacher_course_ids(supabase, teacher_id, filter_course_id)
+    if not course_ids:
+        return []
     res = (
         supabase.table("users")
         .select("id, name")
         .eq("role", "student")
+        .in_("course_id", course_ids)
         .order("name")
         .execute()
     )

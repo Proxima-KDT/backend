@@ -7,6 +7,11 @@ from app.utils.supabase_client import get_supabase
 from app.schemas.admin import (
     AdminStudentResponse,
     UserRoleUpdateRequest,
+    CreateStudentRequest,
+    CreateTeacherRequest,
+    CreateUserResponse,
+    UpdateUserPasswordRequest,
+    CourseResponse,
     AdminEquipmentResponse,
     EquipmentCreateRequest,
     EquipmentStatusUpdate,
@@ -20,6 +25,7 @@ from app.schemas.admin import (
     RoomStatusUpdate,
     AdminBookedSlotResponse,
 )
+from app.services import admin_users_service
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -68,6 +74,18 @@ def list_admin_students(
             "uploaded_at": f.get("uploaded_at", "")[:10] if f.get("uploaded_at") else None,
         })
 
+    # 과정/기수 매핑
+    course_ids = list({s["course_id"] for s in students if s.get("course_id")})
+    cohort_ids = list({s["cohort_id"] for s in students if s.get("cohort_id")})
+    course_map: dict = {}
+    if course_ids:
+        cr = supabase.table("courses").select("id,name").in_("id", course_ids).execute()
+        course_map = {c["id"]: c["name"] for c in (cr.data or [])}
+    cohort_map: dict = {}
+    if cohort_ids:
+        coh = supabase.table("cohorts").select("id,cohort_number").in_("id", cohort_ids).execute()
+        cohort_map = {c["id"]: c["cohort_number"] for c in (coh.data or [])}
+
     result = []
     for s in students:
         uid = s["id"]
@@ -87,6 +105,12 @@ def list_admin_students(
                 enrolled_at=s.get("created_at", "")[:10] if s.get("created_at") else None,
                 skills=skills_by_user.get(uid, {}),
                 files=files_by_user.get(uid, []),
+                address=s.get("address"),
+                phone=s.get("phone"),
+                course_id=s.get("course_id"),
+                course_name=course_map.get(s.get("course_id")),
+                cohort_id=s.get("cohort_id"),
+                cohort_number=cohort_map.get(s.get("cohort_id")),
             )
         )
     return result
@@ -116,6 +140,18 @@ def get_admin_student_detail(student_id: str, user=Depends(get_current_admin)):
 
     files = _get_student_files(supabase, uid)
 
+    # 과정/기수 정보
+    course_name = None
+    cohort_number = None
+    if s.get("course_id"):
+        cr = supabase.table("courses").select("name").eq("id", s["course_id"]).limit(1).execute()
+        if cr.data:
+            course_name = cr.data[0]["name"]
+    if s.get("cohort_id"):
+        coh = supabase.table("cohorts").select("cohort_number").eq("id", s["cohort_id"]).limit(1).execute()
+        if coh.data:
+            cohort_number = coh.data[0]["cohort_number"]
+
     return AdminStudentResponse(
         id=uid,
         name=s.get("name", ""),
@@ -129,6 +165,12 @@ def get_admin_student_detail(student_id: str, user=Depends(get_current_admin)):
         enrolled_at=s.get("created_at", "")[:10] if s.get("created_at") else None,
         skills=skills,
         files=files,
+        address=s.get("address"),
+        phone=s.get("phone"),
+        course_id=s.get("course_id"),
+        course_name=course_name,
+        cohort_id=s.get("cohort_id"),
+        cohort_number=cohort_number,
     )
 
 
@@ -751,3 +793,66 @@ def _get_student_files(supabase, student_id: str) -> list:
         ]
     except Exception:
         return []
+
+
+# ═══════════════════════════════════════════════════
+# 9. 계정 관리 — 관리자가 학생/강사 계정 생성
+# ═══════════════════════════════════════════════════
+
+
+@router.get("/courses", response_model=List[CourseResponse])
+def list_admin_courses(_admin=Depends(get_current_admin)):
+    """과정(course) 목록 + 각 과정의 기수(cohorts) 포함."""
+    return admin_users_service.list_courses()
+
+
+@router.post(
+    "/users/students",
+    response_model=CreateUserResponse,
+    status_code=201,
+)
+def admin_create_student(
+    payload: CreateStudentRequest,
+    _admin=Depends(get_current_admin),
+):
+    """관리자 전용 — 학생 계정 생성 (과정 + 기수 연결)"""
+    return admin_users_service.create_student(
+        email=payload.email,
+        password=payload.password,
+        name=payload.name,
+        address=payload.address,
+        phone=payload.phone,
+        course_id=payload.course_id,
+        cohort_id=payload.cohort_id,
+    )
+
+
+@router.post(
+    "/users/teachers",
+    response_model=CreateUserResponse,
+    status_code=201,
+)
+def admin_create_teacher(
+    payload: CreateTeacherRequest,
+    _admin=Depends(get_current_admin),
+):
+    """관리자 전용 — 강사 계정 생성 (여러 과정 담당 가능)"""
+    return admin_users_service.create_teacher(
+        email=payload.email,
+        password=payload.password,
+        name=payload.name,
+        address=payload.address,
+        phone=payload.phone,
+        course_ids=payload.course_ids,
+    )
+
+
+@router.post("/users/{user_id}/password")
+def admin_reset_user_password(
+    user_id: str,
+    payload: UpdateUserPasswordRequest,
+    _admin=Depends(get_current_admin),
+):
+    """관리자 전용 — 사용자 비밀번호 재발급"""
+    admin_users_service.update_user_password(user_id, payload.new_password)
+    return {"message": "비밀번호가 변경되었습니다."}

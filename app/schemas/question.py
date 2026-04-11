@@ -13,6 +13,7 @@ class QuestionResponse(BaseModel):
     content: str
     is_anonymous: bool
     author: Optional[str] = None
+    course_name: Optional[str] = None
     created_at: str
     answer: Optional[str] = None
     answered_at: Optional[str] = None

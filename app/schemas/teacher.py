@@ -36,6 +36,18 @@ class TeacherStudentResponse(BaseModel):
     notes: Optional[str] = None
     skills: Dict[str, float] = {}
     files: List[StudentFile] = []
+    course_id: Optional[str] = None
+    course_name: Optional[str] = None
+    cohort_id: Optional[int] = None
+    cohort_number: Optional[int] = None
+
+
+# ── 강사 과정 드롭다운 ───────────────────────────
+class TeacherCourseResponse(BaseModel):
+    id: str
+    name: str
+    track_type: str  # 'main' | 'sub'
+    classroom: Optional[str] = None
 
 
 class StudentNoteUpdate(BaseModel):
@@ -54,12 +66,20 @@ class ClassroomSeatResponse(BaseModel):
     seat_id: str
     row: int
     col: int
+    course_id: Optional[str] = None
     student_id: Optional[str] = None
     student_name: Optional[str] = None
 
 
 class SeatAssignRequest(BaseModel):
     student_id: Optional[str] = None  # None이면 배정 해제
+    course_id: Optional[str] = None   # 권한 검증·동일 과정 확인용
+
+
+class SeatInitRequest(BaseModel):
+    course_id: str
+    rows: int = 5
+    cols: int = 2
 
 
 class DailyAttendanceRecord(BaseModel):
@@ -218,7 +238,9 @@ class AIProblemGenerateRequest(BaseModel):
 
 class CounselingRecordResponse(BaseModel):
     id: str
+    student_id: Optional[str] = None
     student_name: Optional[str] = None
+    course_name: Optional[str] = None
     date: str
     duration: Optional[str] = None
     summary: Optional[str] = None
@@ -240,6 +262,7 @@ class TeacherQuestionResponse(BaseModel):
     content: str
     is_anonymous: bool
     author: Optional[str] = None
+    course_name: Optional[str] = None
     created_at: str
     answer: Optional[str] = None
     answered_at: Optional[str] = None

@@ -55,13 +55,27 @@ def _compute_phase(phase: dict) -> tuple:
 
 
 @router.get("", response_model=List[CurriculumPhaseResponse])
-def get_curriculum(_user=Depends(get_current_user)):
-    """전체 커리큘럼 Phase 목록 + 날짜 기반 동적 진행률 반환"""
+def get_curriculum(user=Depends(get_current_user)):
+    """현재 로그인한 학생의 수강 과정 curriculum만 반환.
+    course_id가 지정되지 않은 사용자(강사/관리자)는 빈 배열."""
     supabase = get_supabase()
+
+    # 학생의 course_id 조회 (강사/관리자는 NULL → 빈 배열)
+    me = (
+        supabase.table("users")
+        .select("course_id")
+        .eq("id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    my_course_id = (me.data[0].get("course_id") if me.data else None)
+    if not my_course_id:
+        return []
 
     phases_res = (
         supabase.table("curriculum")
         .select("*")
+        .eq("course_id", my_course_id)
         .order("phase")
         .execute()
     )

@@ -628,12 +628,18 @@ async def list_teacher_assignments(
     course_id: Optional[str] = Query(None),
     user=Depends(get_current_teacher),
 ):
-    """과제 목록 + 학생 제출 현황 — 담당 과정 학생만."""
+    """과제 목록 + 학생 제출 현황 — 담당 과정의 과제와 학생만."""
     supabase = get_supabase()
+
+    # 담당 과정 course_id 목록 (course_id 파라미터가 있으면 권한 검증 후 단일)
+    course_ids = _get_teacher_course_ids(supabase, user["id"], course_id)
+    if not course_ids:
+        return []
 
     assignments_res = (
         supabase.table("assignments")
         .select("*")
+        .in_("course_id", course_ids)
         .order("due_date", desc=True)
         .execute()
     )
@@ -701,21 +707,39 @@ async def list_teacher_assignments(
 
 @router.post("/assignments")
 async def create_assignment(body: AssignmentCreateRequest, user=Depends(get_current_teacher)):
-    """새 과제 생성"""
+    """새 과제 생성 — 과제는 반드시 하나의 course에 귀속된다."""
     supabase = get_supabase()
+
+    # course_id 결정: body.courseId 우선, 없으면 강사의 담당 과정이 단 하나일 때만 자동 선택
+    target_course_id = body.courseId
+    if not target_course_id:
+        owned = _get_teacher_course_ids(supabase, user["id"])
+        if len(owned) == 1:
+            target_course_id = owned[0]
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="courseId를 지정하세요. 담당 과정이 여러 개인 경우 자동 선택할 수 없습니다.",
+            )
+
+    if not _teacher_owns_course(supabase, user["id"], target_course_id):
+        raise HTTPException(status_code=403, detail="담당하지 않는 과정입니다.")
 
     rubric_data = [{"item": r.item, "maxScore": r.maxScore} for r in body.rubric]
 
-    # Phase에서 subject 자동 도출 (프론트에서 보내주지만 백엔드에서도 보장)
-    phase_subject_map = {
-        1: "Python 기초",
-        2: "JavaScript & React",
-        3: "DB & SQL",
-        4: "알고리즘 & 자료구조",
-        5: "풀스택 프로젝트",
-        6: "ML/DL & 취업준비",
-    }
-    subject = body.subject or phase_subject_map.get(body.phase, "")
+    # subject 자동 도출: 프론트 값 우선. 없으면 curriculum(course_id, phase)에서 title 사용.
+    subject = body.subject or ""
+    if not subject and body.phase is not None:
+        curr_res = (
+            supabase.table("curriculum")
+            .select("title")
+            .eq("course_id", target_course_id)
+            .eq("phase", body.phase)
+            .limit(1)
+            .execute()
+        )
+        if curr_res.data:
+            subject = curr_res.data[0].get("title", "")
 
     res = (
         supabase.table("assignments")
@@ -723,6 +747,7 @@ async def create_assignment(body: AssignmentCreateRequest, user=Depends(get_curr
             "title": body.title,
             "subject": subject,
             "phase": body.phase,
+            "course_id": target_course_id,
             "description": body.description,
             "open_date": body.openDate,
             "due_date": body.dueDate,
@@ -741,7 +766,7 @@ async def get_teacher_assignment_detail(
     course_id: Optional[str] = Query(None),
     user=Depends(get_current_teacher),
 ):
-    """과제 상세 + 제출 현황 — 담당 과정 학생만."""
+    """과제 상세 + 제출 현황 — 담당 과정의 과제만, 담당 과정 학생만."""
     supabase = get_supabase()
 
     a_res = (
@@ -754,7 +779,16 @@ async def get_teacher_assignment_detail(
         raise HTTPException(status_code=404, detail="과제를 찾을 수 없습니다.")
 
     a = a_res.data[0] if isinstance(a_res.data, list) else a_res.data
-    students = _get_teacher_students(supabase, user["id"], course_id)
+
+    # 권한: 과제가 강사의 담당 과정에 속해야 함
+    if not _teacher_owns_course(supabase, user["id"], a.get("course_id")):
+        raise HTTPException(status_code=403, detail="담당하지 않는 과정의 과제입니다.")
+
+    # course_id 파라미터가 주어졌으면 과제의 course_id와 일치해야 함
+    if course_id and course_id != a.get("course_id"):
+        raise HTTPException(status_code=400, detail="과제와 선택 과정이 일치하지 않습니다.")
+
+    students = _get_teacher_students(supabase, user["id"], a.get("course_id"))
 
     subs_res = (
         supabase.table("assignment_submissions")
@@ -986,12 +1020,18 @@ async def list_teacher_assessments(
     course_id: Optional[str] = Query(None),
     user=Depends(get_current_teacher),
 ):
-    """평가 목록 + 학생 제출 현황 — 담당 과정 학생만."""
+    """평가 목록 + 학생 제출 현황 — 담당 과정의 평가와 학생만.
+    서브 과정 선택 시 assessments가 없으므로 빈 배열."""
     supabase = get_supabase()
+
+    course_ids = _get_teacher_course_ids(supabase, user["id"], course_id)
+    if not course_ids:
+        return []
 
     assessments_res = (
         supabase.table("assessments")
         .select("*")
+        .in_("course_id", course_ids)
         .order("phase_id")
         .execute()
     )

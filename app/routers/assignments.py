@@ -15,12 +15,25 @@ router = APIRouter(prefix="/api/assignments", tags=["assignments"])
 
 @router.get("", response_model=List[AssignmentResponse])
 async def list_assignments(user=Depends(get_current_user)):
-    """과제 목록 + 제출 현황 조회"""
+    """과제 목록 + 제출 현황 조회 — 본인이 수강하는 과정의 과제만 반환."""
     supabase = get_supabase()
+
+    # 본인 course_id 조회 (없으면 빈 배열)
+    me = (
+        supabase.table("users")
+        .select("course_id")
+        .eq("id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    my_course_id = (me.data[0].get("course_id") if me.data else None)
+    if not my_course_id:
+        return []
 
     assignments_res = (
         supabase.table("assignments")
         .select("*")
+        .eq("course_id", my_course_id)
         .order("due_date")
         .execute()
     )

@@ -142,6 +142,7 @@ class AssignmentCreateRequest(BaseModel):
     title: str
     subject: Optional[str] = None
     phase: Optional[int] = None
+    courseId: Optional[str] = None  # 과제가 귀속될 과정 (미지정 시 강사가 여러 과정 담당이면 400)
     description: Optional[str] = None
     dueDate: Optional[str] = None
     openDate: Optional[str] = None

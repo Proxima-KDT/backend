@@ -9,12 +9,25 @@ router = APIRouter(prefix="/api/assessments", tags=["assessments"])
 
 @router.get("", response_model=List[AssessmentResponse])
 async def list_assessments(user=Depends(get_current_user)):
-    """평가 목록 + 학생 제출 현황 조회"""
+    """평가 목록 + 학생 제출 현황 조회 — 본인 수강 과정의 평가만 반환.
+    서브 과정(능력단위평가 없음)은 빈 배열이 반환된다."""
     supabase = get_supabase()
+
+    me = (
+        supabase.table("users")
+        .select("course_id")
+        .eq("id", user["id"])
+        .limit(1)
+        .execute()
+    )
+    my_course_id = (me.data[0].get("course_id") if me.data else None)
+    if not my_course_id:
+        return []
 
     assessments_res = (
         supabase.table("assessments")
         .select("*")
+        .eq("course_id", my_course_id)
         .order("phase_id")
         .execute()
     )

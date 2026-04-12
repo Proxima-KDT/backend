@@ -89,3 +89,20 @@ class SummaryCard(BaseModel):
 class AgentSummaryResponse(BaseModel):
     role: Literal["student", "teacher", "admin"]
     cards: list[SummaryCard] = []
+
+
+# ============================================================
+# 대화 이력 조회
+# ============================================================
+
+
+class HistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    tool_calls: list[ToolCallRecord] = []
+    duration_ms: int | None = None
+
+
+class ChatHistoryResponse(BaseModel):
+    messages: list[HistoryMessage]
+    total: int

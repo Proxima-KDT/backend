@@ -126,11 +126,15 @@ class BriefingState(TypedDict, total=False):
 
 
 def node_briefing_collect_attendance(state: BriefingState) -> dict:
-    """오늘/이번주 클래스 출석 요약 수집."""
+    """오늘/이번주 클래스 출석 요약 수집 (선택 과정 필터 적용)."""
     started = time.monotonic()
     user = state["user"]
+    params = state.get("params") or {}
+    tool_args: dict = {"period": "week"}
+    if params.get("course_id"):
+        tool_args["course_id"] = params["course_id"]
     try:
-        att = _tool_get_class_attendance_summary({"period": "week"}, user)
+        att = _tool_get_class_attendance_summary(tool_args, user)
     except Exception as e:
         logger.exception("collect_attendance 실패")
         att = {"error": str(e)}
@@ -156,15 +160,16 @@ def node_briefing_collect_assignments(state: BriefingState) -> dict:
 
 
 def node_briefing_analyze_risk(state: BriefingState) -> dict:
-    """위험 학생 식별 — _tool_get_at_risk_students 호출."""
+    """위험 학생 식별 — _tool_get_at_risk_students 호출 (선택 과정 필터 적용)."""
     started = time.monotonic()
     user = state["user"]
     params = state.get("params") or {}
     threshold = int(params.get("threshold_pct", 80))
+    tool_args: dict = {"threshold_pct": threshold, "limit": 10}
+    if params.get("course_id"):
+        tool_args["course_id"] = params["course_id"]
     try:
-        risk = _tool_get_at_risk_students(
-            {"threshold_pct": threshold, "limit": 10}, user
-        )
+        risk = _tool_get_at_risk_students(tool_args, user)
     except Exception as e:
         logger.exception("analyze_risk 실패")
         risk = {"count": 0, "students": [], "error": str(e)}
@@ -222,13 +227,18 @@ async def node_briefing_summarize(state: BriefingState) -> dict:
 
     system = (
         "당신은 EduPilot 의 강사용 일일 브리핑 작성자입니다. "
-        "제공된 클래스 출석/과제/위험학생 데이터를 기반으로 300자 이내의 한국어 브리핑을 작성하세요. "
-        "수치는 구체적으로, 중요한 순서대로, bullet 3~5개로. 추측은 금지입니다."
+        "제공된 데이터를 기반으로 400자 이내의 한국어 브리핑을 작성하세요. "
+        "규칙: "
+        "1) 학생 이름을 반드시 실명으로 명시하세요. '일부 학생' 같은 모호한 표현 금지. "
+        "2) 과제는 제목(title)을 명시하세요. '일부 과제' 같은 표현 금지. "
+        "3) 수치는 구체적으로(예: 출석률 70.0%, 결석 3회). "
+        "4) 중요도 순으로 bullet 4~5개. "
+        "5) 추측·예측 금지, 데이터에 없는 내용 작성 금지."
     )
     user_content = (
-        f"[출석 요약]\n{att}\n\n"
-        f"[과제 제출 통계]\n{asg}\n\n"
-        f"[위험 학생]\n{risk}\n\n"
+        f"[출석 요약 - 이번 주]\n{att}\n\n"
+        f"[과제 제출 통계 - 최근 과제 목록 포함]\n{asg}\n\n"
+        f"[위험 학생 - 출석률 미달 학생]\n{risk}\n\n"
         f"[초안 알림 {len(drafts)}건]\n{drafts}"
     )
     summary = await _summarize_with_llm(system, user_content)

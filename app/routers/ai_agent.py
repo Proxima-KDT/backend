@@ -18,6 +18,8 @@ from app.schemas.ai_agent import (
     AgentChatRequest,
     AgentChatResponse,
     AgentSummaryResponse,
+    ChatHistoryResponse,
+    HistoryMessage,
     WorkflowRequest,
     WorkflowResponse,
     WorkflowResumeRequest,
@@ -65,6 +67,19 @@ async def resume_workflow(
 
     result = await ai_agent_workflow.resume(thread_id, user, body.model_dump())
     return WorkflowResponse(**result)
+
+
+@router.get("/history", response_model=ChatHistoryResponse)
+async def chat_history(
+    limit: int = 20,
+    user: dict = Depends(get_current_user),
+) -> ChatHistoryResponse:
+    """최근 대화 이력 조회. agent_logs trigger='chat' 기준 최대 limit건."""
+    messages = await ai_agent_service.get_chat_history(user, min(limit, 50))
+    return ChatHistoryResponse(
+        messages=[HistoryMessage(**m) for m in messages],
+        total=len(messages),
+    )
 
 
 @router.get("/summary", response_model=AgentSummaryResponse)

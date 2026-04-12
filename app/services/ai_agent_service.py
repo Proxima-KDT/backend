@@ -640,18 +640,67 @@ def _tool_get_my_questions_status(args: dict, user: dict) -> dict:
 # ============================================================
 
 
+def _get_teacher_student_ids(
+    supabase,
+    teacher_id: str,
+    filter_course_id: str | None = None,
+) -> list[str]:
+    """teacher_courses → users 순으로 조회해 강사 담당 학생 ID 목록 반환.
+
+    filter_course_id 가 주어지면 해당 과정 학생만 반환한다.
+    강사가 담당하지 않는 course_id 를 지정하면 빈 목록(보안 차단) 반환.
+    """
+    try:
+        tc = (
+            supabase.table("teacher_courses")
+            .select("course_id")
+            .eq("teacher_id", teacher_id)
+            .execute()
+        )
+        all_course_ids = [r["course_id"] for r in (tc.data or [])]
+        if not all_course_ids:
+            return []
+
+        if filter_course_id:
+            # 강사가 담당하지 않는 course 는 차단
+            course_ids = [filter_course_id] if filter_course_id in all_course_ids else []
+        else:
+            course_ids = all_course_ids
+
+        if not course_ids:
+            return []
+
+        ur = (
+            supabase.table("users")
+            .select("id")
+            .in_("course_id", course_ids)
+            .eq("role", "student")
+            .execute()
+        )
+        return [u["id"] for u in (ur.data or [])]
+    except Exception as e:
+        logger.warning("_get_teacher_student_ids 실패: %s", e)
+        return []
+
+
 def _tool_get_at_risk_students(args: dict, user: dict) -> dict:
     threshold_pct = max(0, min(int(args.get("threshold_pct", 80) or 80), 100))
     limit = max(1, min(int(args.get("limit", 10) or 10), 30))
     supabase = get_supabase()
 
-    # 최근 30일 출석 기록을 전체 조회 후 학생별로 집계
-    # (JOIN 기반 쿼리가 복잡해 Supabase 클라이언트로는 서버사이드 집계 어려움 → 앱 레벨 집계)
+    # 담당 과정 학생만 대상으로 한정 (course_id 지정 시 단일 과정)
+    filter_course_id = args.get("course_id") or None
+    teacher_student_ids = _get_teacher_student_ids(supabase, user["id"], filter_course_id)
+    if not teacher_student_ids:
+        return {"threshold_pct": threshold_pct, "count": 0, "students": []}
+
+    # 최근 30일 출석 기록 — 담당 학생만 조회
     since = (date.today() - timedelta(days=30)).isoformat()
     att_res = (
         supabase.table("attendance")
         .select("user_id, status")
         .gte("date", since)
+        .in_("user_id", teacher_student_ids)
         .execute()
     )
     rows = att_res.data or []
@@ -722,11 +771,28 @@ def _tool_get_class_attendance_summary(args: dict, user: dict) -> dict:
     else:
         start = today
 
+    # 담당 과정 학생만 대상으로 한정 (course_id 지정 시 단일 과정)
+    filter_course_id = args.get("course_id") or None
+    teacher_student_ids = _get_teacher_student_ids(supabase, user["id"], filter_course_id)
+    if not teacher_student_ids:
+        return {
+            "period": period,
+            "period_start": start.isoformat(),
+            "period_end": today.isoformat(),
+            "unique_students": 0,
+            "present": 0,
+            "late": 0,
+            "absent": 0,
+            "early_leave": 0,
+            "attendance_rate_pct": 0.0,
+            "absent_student_names": [],
+        }
     att_res = (
         supabase.table("attendance")
         .select("user_id, date, status")
         .gte("date", start.isoformat())
         .lte("date", today.isoformat())
+        .in_("user_id", teacher_student_ids)
         .execute()
     )
     rows = att_res.data or []
@@ -1248,6 +1314,58 @@ def _log_to_supabase(
 
 
 # ============================================================
+# 대화 이력 조회 — agent_logs 에서 최근 N건 chat 로그 반환
+# ============================================================
+
+
+async def get_chat_history(user: dict, limit: int = 20) -> list[dict]:
+    """agent_logs 에서 유저의 최근 채팅 이력을 메시지 배열로 반환.
+
+    trigger = 'chat' 인 로그만 조회하고, 오래된 순으로 정렬해 반환한다.
+    각 로그 1건은 user 메시지 + assistant 메시지 쌍으로 변환된다.
+    """
+    try:
+        supabase = get_supabase()
+        resp = (
+            supabase.table("agent_logs")
+            .select("input, output, tool_calls, duration_ms")
+            .eq("user_id", user["id"])
+            .eq("trigger", "chat")
+            .order("id", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        rows = list(reversed(resp.data or []))
+    except Exception as e:
+        logger.warning("get_chat_history 조회 실패 (빈 배열 반환): %s", e)
+        return []
+
+    messages: list[dict] = []
+    for row in rows:
+        inp = row.get("input") or {}
+        out = row.get("output") or {}
+        tool_calls = row.get("tool_calls") or []
+        duration_ms = row.get("duration_ms")
+
+        user_text = inp.get("message", "")
+        assistant_text = out.get("answer", "")
+
+        if user_text:
+            messages.append({"role": "user", "content": user_text})
+        if assistant_text:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": assistant_text,
+                    "tool_calls": tool_calls,
+                    "duration_ms": duration_ms,
+                }
+            )
+
+    return messages
+
+
+# ============================================================
 # 사이드 패널 요약 — AI 호출 없이 고정 쿼리
 # ============================================================
 
@@ -1310,7 +1428,7 @@ def _summary_teacher(user: dict) -> list[dict]:
         {
             "title": "오늘 결석",
             "value": f"{today.get('absent', 0)}명",
-            "sub": f"지각 {today.get('late', 0)}",
+            "sub": f"지각 {today.get('late', 0)}명 · 조퇴 {today.get('early_leave', 0)}명",
             "icon": "UserX",
             "color": "rose" if today.get("absent", 0) > 0 else "emerald",
         },

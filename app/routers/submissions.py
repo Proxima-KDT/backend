@@ -82,7 +82,11 @@ def submit_quiz(body: QuizSubmitRequest, user=Depends(get_current_user)):
         if correct_info is None:
             continue
 
-        is_correct = (selected == correct_info["answer"])
+        # answer가 null이면 개념 확인 문제(서술형) → 자동 정답 처리
+        if correct_info["answer"] is None:
+            is_correct = True
+        else:
+            is_correct = (selected == correct_info["answer"])
         if is_correct:
             correct_count += 1
 

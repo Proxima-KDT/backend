@@ -15,10 +15,26 @@ class ProfileResponse(BaseModel):
     cohort_number: Optional[int] = None
     course_start_date: Optional[str] = None
     course_end_date: Optional[str] = None
+    daily_start_time: Optional[str] = None
+    daily_end_time: Optional[str] = None
+    teacher_name: Optional[str] = None
+    mentor_name: Optional[str] = None
 
 
 class ProfileUpdateTargetJobs(BaseModel):
     jobs: List[str]
+
+
+class StudentFileItem(BaseModel):
+    id: int
+    name: str
+    type: str          # 'resume' | 'portfolio'
+    url: str
+    uploaded_at: Optional[str] = None
+
+
+class StudentFileListResponse(BaseModel):
+    files: List[StudentFileItem] = []
 
 
 class SkillScoreResponse(BaseModel):

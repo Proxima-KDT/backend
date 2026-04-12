@@ -1,8 +1,9 @@
+import time
 from datetime import date, timedelta
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from app.dependencies import get_current_user
 from app.utils.supabase_client import get_supabase
-from app.schemas.profile import ProfileResponse, ProfileUpdateTargetJobs, SkillScoreResponse
+from app.schemas.profile import ProfileResponse, ProfileUpdateTargetJobs, SkillScoreResponse, StudentFileListResponse, StudentFileItem
 
 router = APIRouter(prefix="/api/profile", tags=["profile"])
 
@@ -45,15 +46,61 @@ def get_my_profile(user=Depends(get_current_user)):
             course_start_date = str(c["start_date"]) if c.get("start_date") else None
             course_end_date = str(c["end_date"]) if c.get("end_date") else None
 
+    daily_start_time = None
+    daily_end_time = None
+    teacher_name = None
+
     if course_id:
         course_res = (
             supabase.table("courses")
-            .select("name")
+            .select("name, daily_start_time, daily_end_time")
             .eq("id", course_id)
             .execute()
         )
         if course_res.data:
-            course_name = course_res.data[0].get("name")
+            course_data = course_res.data[0]
+            course_name = course_data.get("name")
+            daily_start_time = str(course_data["daily_start_time"])[:5] if course_data.get("daily_start_time") else None
+            daily_end_time = str(course_data["daily_end_time"])[:5] if course_data.get("daily_end_time") else None
+
+        # 담당 강사 조회 (teacher_courses → users)
+        tc_res = (
+            supabase.table("teacher_courses")
+            .select("teacher_id")
+            .eq("course_id", course_id)
+            .execute()
+        )
+        if tc_res.data:
+            teacher_id = tc_res.data[0]["teacher_id"]
+            teacher_res = (
+                supabase.table("users")
+                .select("name")
+                .eq("id", teacher_id)
+                .execute()
+            )
+            if teacher_res.data:
+                teacher_name = teacher_res.data[0].get("name")
+
+    # 담당 멘토 조회: mentor_courses 테이블 → users (teacher_courses와 동일 패턴)
+    mentor_name = None
+    if course_id:
+        mc_res = (
+            supabase.table("mentor_courses")
+            .select("mentor_id")
+            .eq("course_id", course_id)
+            .limit(1)
+            .execute()
+        )
+        if mc_res.data:
+            mentor_id = mc_res.data[0]["mentor_id"]
+            mentor_res = (
+                supabase.table("users")
+                .select("name")
+                .eq("id", mentor_id)
+                .execute()
+            )
+            if mentor_res.data:
+                mentor_name = mentor_res.data[0].get("name")
 
     return ProfileResponse(
         id=str(p["id"]),
@@ -68,6 +115,10 @@ def get_my_profile(user=Depends(get_current_user)):
         cohort_number=cohort_number,
         course_start_date=course_start_date,
         course_end_date=course_end_date,
+        daily_start_time=daily_start_time,
+        daily_end_time=daily_end_time,
+        teacher_name=teacher_name,
+        mentor_name=mentor_name,
     )
 
 
@@ -200,4 +251,118 @@ def get_skill_scores(user=Depends(get_current_user)):
         overall_score=overall_score,
         tier=tier,
     )
+
+
+# ── 이력서 / 포트폴리오 파일 ──────────────────────────────────
+
+ALLOWED_MIME = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+
+@router.get("/files", response_model=StudentFileListResponse)
+def get_my_files(user=Depends(get_current_user)):
+    """내 이력서/포트폴리오 파일 목록"""
+    supabase = get_supabase()
+    res = (
+        supabase.table("student_files")
+        .select("*")
+        .eq("student_id", user["id"])
+        .order("uploaded_at", desc=True)
+        .execute()
+    )
+    files = [
+        StudentFileItem(
+            id=f["id"],
+            name=f.get("name", ""),
+            type=f.get("type", ""),
+            url=f.get("url", ""),
+            uploaded_at=f.get("uploaded_at", "")[:10] if f.get("uploaded_at") else None,
+        )
+        for f in (res.data or [])
+    ]
+    return StudentFileListResponse(files=files)
+
+
+@router.post("/files", response_model=StudentFileItem)
+async def upload_student_file(
+    file: UploadFile = File(...),
+    file_type: str = Form(...),   # 'resume' | 'portfolio'
+    user=Depends(get_current_user),
+):
+    """이력서 또는 포트폴리오 업로드"""
+    if file_type not in ("resume", "portfolio"):
+        raise HTTPException(status_code=400, detail="file_type은 'resume' 또는 'portfolio'여야 합니다.")
+    if file.content_type not in ALLOWED_MIME:
+        raise HTTPException(status_code=400, detail="PDF, DOC, DOCX, PPT, PPTX 파일만 업로드 가능합니다.")
+
+    contents = await file.read()
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="파일 크기는 10MB를 초과할 수 없습니다.")
+
+    supabase = get_supabase()
+    ts = int(time.time())
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "bin"
+    # Storage 경로는 ASCII만 허용 → 타임스탬프 + 확장자만 사용
+    path = f"student-files/{user['id']}/{file_type}/{ts}.{ext}"
+
+    supabase.storage.from_("uploads").upload(
+        path, contents, {"content-type": file.content_type, "upsert": "true"}
+    )
+    url_res = supabase.storage.from_("uploads").get_public_url(path)
+    url = url_res if isinstance(url_res, str) else url_res.get("publicUrl", "")
+
+    insert_res = (
+        supabase.table("student_files")
+        .insert({
+            "student_id": user["id"],
+            "name": file.filename,
+            "type": file_type,
+            "url": url,
+        })
+        .execute()
+    )
+    f = insert_res.data[0]
+    return StudentFileItem(
+        id=f["id"],
+        name=f.get("name", ""),
+        type=f.get("type", ""),
+        url=f.get("url", ""),
+        uploaded_at=f.get("uploaded_at", "")[:10] if f.get("uploaded_at") else None,
+    )
+
+
+@router.delete("/files/{file_id}")
+def delete_student_file(file_id: int, user=Depends(get_current_user)):
+    """파일 삭제 (본인 파일만)"""
+    supabase = get_supabase()
+
+    res = (
+        supabase.table("student_files")
+        .select("*")
+        .eq("id", file_id)
+        .eq("student_id", user["id"])
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
+
+    file_data = res.data[0]
+    # Storage에서도 삭제 (URL → path 추출)
+    url = file_data.get("url", "")
+    try:
+        # URL 패턴: .../object/public/uploads/student-files/...
+        if "student-files/" in url:
+            storage_path = "student-files/" + url.split("student-files/")[-1]
+            supabase.storage.from_("uploads").remove([storage_path])
+    except Exception:
+        pass  # Storage 삭제 실패해도 DB는 삭제
+
+    supabase.table("student_files").delete().eq("id", file_id).execute()
+    return {"message": "파일이 삭제되었습니다."}
 

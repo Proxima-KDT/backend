@@ -76,11 +76,11 @@ def _rollback_auth_user(user_id: str) -> None:
 # ─────────────────────────────────────────────
 
 def list_courses() -> List[dict]:
-    """courses 전체를 cohorts와 함께 반환한다."""
+    """courses 전체를 cohorts + 학생 수와 함께 반환한다."""
     supabase = get_supabase()
     courses = (
         supabase.table("courses")
-        .select("id,name,track_type,classroom,duration_months,daily_start_time,daily_end_time,description")
+        .select("id,name,track_type,classroom,duration_months,daily_start_time,daily_end_time,description,start_date,end_date")
         .order("track_type")
         .order("name")
         .execute()
@@ -94,6 +94,52 @@ def list_courses() -> List[dict]:
         .data or []
     )
 
+    # 과정별·기수별 학생 수 조회
+    students = (
+        supabase.table("users")
+        .select("course_id,cohort_id")
+        .eq("role", "student")
+        .execute()
+        .data or []
+    )
+    course_student_count: dict = {}
+    cohort_student_count: dict = {}
+    for s in students:
+        cid = s.get("course_id")
+        chid = s.get("cohort_id")
+        if cid:
+            course_student_count[cid] = course_student_count.get(cid, 0) + 1
+        if chid:
+            cohort_student_count[chid] = cohort_student_count.get(chid, 0) + 1
+
+    # 과정별 담당강사 조회 (teacher_courses → users)
+    tc_rows = (
+        supabase.table("teacher_courses")
+        .select("course_id,teacher_id")
+        .execute()
+        .data or []
+    )
+    teacher_ids = list({row["teacher_id"] for row in tc_rows})
+    teacher_map: dict = {}  # teacher_id → name
+    if teacher_ids:
+        t_res = (
+            supabase.table("users")
+            .select("id,name")
+            .in_("id", teacher_ids)
+            .execute()
+            .data or []
+        )
+        teacher_map = {t["id"]: t["name"] for t in t_res}
+    # course_id → {teacher_id, teacher_name}
+    course_teacher: dict = {}
+    for row in tc_rows:
+        cid = row["course_id"]
+        if cid not in course_teacher:
+            course_teacher[cid] = {
+                "teacher_id": row["teacher_id"],
+                "teacher_name": teacher_map.get(row["teacher_id"]),
+            }
+
     by_course: dict = {}
     for c in cohorts:
         by_course.setdefault(c["course_id"], []).append(
@@ -103,11 +149,13 @@ def list_courses() -> List[dict]:
                 "status": c["status"],
                 "start_date": c.get("start_date"),
                 "end_date": c.get("end_date"),
+                "student_count": cohort_student_count.get(c["id"], 0),
             }
         )
 
     result = []
     for course in courses:
+        ct = course_teacher.get(course["id"], {})
         result.append(
             {
                 "id": course["id"],
@@ -119,6 +167,11 @@ def list_courses() -> List[dict]:
                 "daily_end_time": str(course["daily_end_time"])[:5],
                 "description": course.get("description"),
                 "cohorts": by_course.get(course["id"], []),
+                "student_count": course_student_count.get(course["id"], 0),
+                "teacher_id": ct.get("teacher_id"),
+                "teacher_name": ct.get("teacher_name"),
+                "start_date": str(course["start_date"]) if course.get("start_date") else None,
+                "end_date": str(course["end_date"]) if course.get("end_date") else None,
             }
         )
     return result

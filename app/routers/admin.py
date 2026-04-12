@@ -1,7 +1,7 @@
 ﻿from datetime import date, datetime, timedelta
 from typing import List, Optional
 import uuid
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
 from app.dependencies import get_current_admin
 from app.utils.supabase_client import get_supabase
 from app.schemas.admin import (
@@ -12,8 +12,14 @@ from app.schemas.admin import (
     CreateUserResponse,
     UpdateUserPasswordRequest,
     CourseResponse,
+    CohortResponse,
+    CreateCourseRequest,
+    UpdateCourseRequest,
+    CreateCohortRequest,
+    UpdateCohortRequest,
     AdminEquipmentResponse,
     EquipmentCreateRequest,
+    EquipmentUpdateRequest,
     EquipmentStatusUpdate,
     EquipmentRequestResponse,
     EquipmentRejectRequest,
@@ -332,6 +338,7 @@ def list_admin_equipment(
             borrower=item.get("borrower_name"),
             borrower_id=str(item["borrower_id"]) if item.get("borrower_id") else None,
             borrowed_at=item.get("borrowed_at"),
+            image_url=item.get("image_url"),
         )
         for item in items
     ]
@@ -438,14 +445,18 @@ def create_equipment(body: EquipmentCreateRequest, user=Depends(get_current_admi
             detail=f"시리얼 '{body.serial_no}'은(는) 이미 등록된 장비입니다. ({existing_name})",
         )
 
+    insert_data = {
+        "name": body.name,
+        "serial_no": body.serial_no,
+        "category": body.category,
+        "status": "available",
+    }
+    if body.image_url:
+        insert_data["image_url"] = body.image_url
+
     res = (
         supabase.table("equipment")
-        .insert({
-            "name": body.name,
-            "serial_no": body.serial_no,
-            "category": body.category,
-            "status": "available",
-        })
+        .insert(insert_data)
         .execute()
     )
     item = res.data[0]
@@ -458,7 +469,87 @@ def create_equipment(body: EquipmentCreateRequest, user=Depends(get_current_admi
         borrower=item.get("borrower_name"),
         borrower_id=str(item["borrower_id"]) if item.get("borrower_id") else None,
         borrowed_at=item.get("borrowed_at"),
+        image_url=item.get("image_url"),
     )
+
+
+@router.put("/equipment/{equipment_id}", response_model=AdminEquipmentResponse)
+def update_equipment(equipment_id: str, body: EquipmentUpdateRequest, user=Depends(get_current_admin)):
+    """장비 정보 수정 — 대여 중인 장비는 수정 불가"""
+    supabase = get_supabase()
+    # 대여 중 여부 확인
+    existing = supabase.table("equipment").select("id, status").eq("id", int(equipment_id)).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="장비를 찾을 수 없습니다.")
+    if existing.data[0]["status"] == "borrowed":
+        raise HTTPException(status_code=409, detail="대여 중인 장비는 수정할 수 없습니다.")
+    update_data = {}
+    if body.name is not None:
+        update_data["name"] = body.name
+    if body.serial_no is not None:
+        # 시리얼 중복 체크 (자기 자신 제외)
+        dup = supabase.table("equipment").select("id").eq("serial_no", body.serial_no).neq("id", int(equipment_id)).execute()
+        if dup.data:
+            raise HTTPException(status_code=409, detail=f"시리얼 '{body.serial_no}'은(는) 이미 사용 중입니다.")
+        update_data["serial_no"] = body.serial_no
+    if body.category is not None:
+        update_data["category"] = body.category
+    if body.image_url is not None:
+        update_data["image_url"] = body.image_url
+    if not update_data:
+        raise HTTPException(status_code=400, detail="수정할 내용이 없습니다.")
+    res = supabase.table("equipment").update(update_data).eq("id", int(equipment_id)).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="장비를 찾을 수 없습니다.")
+    item = res.data[0]
+    return AdminEquipmentResponse(
+        id=str(item["id"]),
+        name=item["name"],
+        serial_no=item["serial_no"],
+        category=item.get("category"),
+        status=item["status"],
+        borrower=item.get("borrower_name"),
+        borrower_id=str(item["borrower_id"]) if item.get("borrower_id") else None,
+        borrowed_at=item.get("borrowed_at"),
+        image_url=item.get("image_url"),
+    )
+
+
+@router.delete("/equipment/{equipment_id}")
+def delete_equipment(equipment_id: str, user=Depends(get_current_admin)):
+    """장비 삭제"""
+    supabase = get_supabase()
+    existing = supabase.table("equipment").select("id, name, status").eq("id", int(equipment_id)).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="장비를 찾을 수 없습니다.")
+    item = existing.data[0]
+    if item["status"] == "borrowed":
+        raise HTTPException(status_code=409, detail="대여 중인 장비는 삭제할 수 없습니다.")
+    supabase.table("equipment").delete().eq("id", int(equipment_id)).execute()
+    return {"message": f"'{item['name']}' 장비가 삭제되었습니다."}
+
+
+@router.post("/equipment/{equipment_id}/image")
+async def upload_equipment_image(equipment_id: str, file: UploadFile = File(...), user=Depends(get_current_admin)):
+    """장비 사진 업로드 (Supabase Storage)"""
+    supabase = get_supabase()
+    # 파일 확장자 추출
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
+    if ext not in ("jpg", "jpeg", "png", "webp", "gif"):
+        raise HTTPException(status_code=400, detail="지원하지 않는 이미지 형식입니다.")
+    file_bytes = await file.read()
+    filename = f"equipment/{equipment_id}/{uuid.uuid4()}.{ext}"
+    content_type = file.content_type or "image/jpeg"
+    try:
+        supabase.storage.from_("equipment-images").upload(
+            filename, file_bytes, {"content-type": content_type, "upsert": "true"}
+        )
+        image_url = supabase.storage.from_("equipment-images").get_public_url(filename)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"이미지 업로드에 실패했습니다: {str(e)}")
+    # DB에 image_url 저장
+    supabase.table("equipment").update({"image_url": image_url}).eq("id", int(equipment_id)).execute()
+    return {"image_url": image_url}
 
 
 @router.get("/equipment/requests", response_model=List[EquipmentRequestResponse])
@@ -856,3 +947,164 @@ def admin_reset_user_password(
     """관리자 전용 — 사용자 비밀번호 재발급"""
     admin_users_service.update_user_password(user_id, payload.new_password)
     return {"message": "비밀번호가 변경되었습니다."}
+
+
+# ── 강의(Course) CRUD ─────────────────────────────────────────────
+
+@router.post("/courses", response_model=CourseResponse, status_code=201)
+def admin_create_course(payload: CreateCourseRequest, _admin=Depends(get_current_admin)):
+    """강의 신규 생성"""
+    supabase = get_supabase()
+    existing = supabase.table("courses").select("id").eq("id", payload.id).execute()
+    if existing.data:
+        raise HTTPException(status_code=409, detail="이미 존재하는 강의 ID입니다.")
+    supabase.table("courses").insert({
+        "id": payload.id,
+        "name": payload.name,
+        "track_type": payload.track_type,
+        "classroom": payload.classroom,
+        "duration_months": payload.duration_months,
+        "daily_start_time": payload.daily_start_time,
+        "daily_end_time": payload.daily_end_time,
+        "description": payload.description,
+        "start_date": payload.start_date,
+        "end_date": payload.end_date,
+    }).execute()
+    # 담당 강사 배정
+    teacher_name = None
+    if payload.teacher_id:
+        supabase.table("teacher_courses").insert({
+            "teacher_id": payload.teacher_id,
+            "course_id": payload.id,
+        }).execute()
+        t_res = supabase.table("users").select("name").eq("id", payload.teacher_id).execute()
+        teacher_name = t_res.data[0]["name"] if t_res.data else None
+    return CourseResponse(
+        id=payload.id, name=payload.name, track_type=payload.track_type,
+        classroom=payload.classroom, duration_months=payload.duration_months,
+        daily_start_time=payload.daily_start_time, daily_end_time=payload.daily_end_time,
+        description=payload.description, cohorts=[],
+        teacher_id=payload.teacher_id, teacher_name=teacher_name,
+    )
+
+
+@router.put("/courses/{course_id}", response_model=CourseResponse)
+def admin_update_course(course_id: str, payload: UpdateCourseRequest, _admin=Depends(get_current_admin)):
+    """강의 정보 수정"""
+    supabase = get_supabase()
+    # teacher_id는 courses 테이블 컬럼이 아니므로 분리
+    # start_date/end_date는 빈 문자열("")로 초기화 가능하므로 None 체크와 분리
+    course_fields = {"name", "track_type", "classroom", "duration_months",
+                     "daily_start_time", "daily_end_time", "description",
+                     "start_date", "end_date"}
+    update_data = {
+        k: v for k, v in payload.model_dump().items()
+        if k in course_fields and v is not None
+    }
+    if update_data:
+        supabase.table("courses").update(update_data).eq("id", course_id).execute()
+    # 담당 강사 변경 처리 (None = 변경 안 함, "" = 배정 해제, uuid = 새 강사)
+    if payload.teacher_id is not None:
+        supabase.table("teacher_courses").delete().eq("course_id", course_id).execute()
+        if payload.teacher_id:
+            supabase.table("teacher_courses").insert({
+                "teacher_id": payload.teacher_id,
+                "course_id": course_id,
+            }).execute()
+    courses = admin_users_service.list_courses()
+    course = next((c for c in courses if c["id"] == course_id), None)
+    if not course:
+        raise HTTPException(status_code=404, detail="강의를 찾을 수 없습니다.")
+    return course
+
+
+@router.delete("/courses/{course_id}")
+def admin_delete_course(course_id: str, _admin=Depends(get_current_admin)):
+    """강의 삭제 — 등록된 수강생이 있으면 삭제 불가"""
+    supabase = get_supabase()
+    student_res = (
+        supabase.table("users")
+        .select("id", count="exact")
+        .eq("role", "student")
+        .eq("course_id", course_id)
+        .execute()
+    )
+    student_count = student_res.count or 0
+    if student_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"이 강의에 {student_count}명의 수강생이 등록되어 있어 삭제할 수 없습니다. 먼저 수강생을 다른 강의로 이동해주세요.",
+        )
+    supabase.table("cohorts").delete().eq("course_id", course_id).execute()
+    supabase.table("teacher_courses").delete().eq("course_id", course_id).execute()
+    supabase.table("mentor_courses").delete().eq("course_id", course_id).execute()
+    supabase.table("courses").delete().eq("id", course_id).execute()
+    return {"message": "강의가 삭제되었습니다."}
+
+
+# ── 기수(Cohort) CRUD ─────────────────────────────────────────────
+
+@router.post("/courses/{course_id}/cohorts", response_model=CohortResponse, status_code=201)
+def admin_create_cohort(course_id: str, payload: CreateCohortRequest, _admin=Depends(get_current_admin)):
+    """기수 추가"""
+    supabase = get_supabase()
+    res = supabase.table("cohorts").insert({
+        "course_id": course_id,
+        "cohort_number": payload.cohort_number,
+        "status": payload.status,
+        "start_date": payload.start_date,
+        "end_date": payload.end_date,
+    }).execute()
+    c = res.data[0]
+    return CohortResponse(
+        id=c["id"], cohort_number=c["cohort_number"], status=c["status"],
+        start_date=c.get("start_date"), end_date=c.get("end_date"),
+    )
+
+
+@router.put("/cohorts/{cohort_id}", response_model=CohortResponse)
+def admin_update_cohort(cohort_id: int, payload: UpdateCohortRequest, _admin=Depends(get_current_admin)):
+    """기수 정보 수정"""
+    supabase = get_supabase()
+    update_data = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not update_data:
+        raise HTTPException(status_code=400, detail="수정할 내용이 없습니다.")
+    res = supabase.table("cohorts").update(update_data).eq("id", cohort_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="기수를 찾을 수 없습니다.")
+    c = res.data[0]
+    return CohortResponse(
+        id=c["id"], cohort_number=c["cohort_number"], status=c["status"],
+        start_date=c.get("start_date"), end_date=c.get("end_date"),
+    )
+
+
+@router.delete("/cohorts/{cohort_id}")
+def admin_delete_cohort(cohort_id: int, _admin=Depends(get_current_admin)):
+    """기수 삭제 — 등록된 수강생이 있으면 삭제 불가"""
+    supabase = get_supabase()
+    student_res = (
+        supabase.table("users")
+        .select("id", count="exact")
+        .eq("role", "student")
+        .eq("cohort_id", cohort_id)
+        .execute()
+    )
+    student_count = student_res.count or 0
+    if student_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"이 기수에 {student_count}명의 수강생이 등록되어 있어 삭제할 수 없습니다. 먼저 수강생을 다른 기수로 이동해주세요.",
+        )
+    supabase.table("cohorts").delete().eq("id", cohort_id).execute()
+    return {"message": "기수가 삭제되었습니다."}
+
+
+# ── 강사 목록 (과정 배정용) ───────────────────────────────────────
+
+@router.get("/teachers")
+def admin_list_teachers(_admin=Depends(get_current_admin)):
+    """강사 목록 조회 (강의 배정 모달용)"""
+    supabase = get_supabase()
+    res = supabase.table("users").select("id, name, email").eq("role", "teacher").order("name").execute()
+    return res.data or []

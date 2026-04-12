@@ -22,6 +22,7 @@ class CohortResponse(BaseModel):
     status: str  # upcoming | in_progress | completed
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    student_count: int = 0
 
 
 class CourseResponse(BaseModel):
@@ -34,6 +35,11 @@ class CourseResponse(BaseModel):
     daily_end_time: str
     description: Optional[str] = None
     cohorts: List[CohortResponse] = []
+    student_count: int = 0
+    teacher_id: Optional[str] = None
+    teacher_name: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
 
 
 # ── 학생/강사 관리 (관리자) ────────────────────────
@@ -120,12 +126,21 @@ class AdminEquipmentResponse(BaseModel):
     borrower: Optional[str] = None
     borrower_id: Optional[str] = None
     borrowed_at: Optional[str] = None
+    image_url: Optional[str] = None
 
 
 class EquipmentCreateRequest(BaseModel):
     name: str
     serial_no: str
     category: Optional[str] = None
+    image_url: Optional[str] = None
+
+
+class EquipmentUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    serial_no: Optional[str] = None
+    category: Optional[str] = None
+    image_url: Optional[str] = None
 
 
 class EquipmentStatusUpdate(BaseModel):
@@ -204,3 +219,47 @@ class AdminBookedSlotResponse(BaseModel):
     reserved_by: Optional[str] = None
     purpose: Optional[str] = None
     user_id: Optional[str] = None
+
+
+
+# ── 강의(Course) / 기수(Cohort) CRUD ────────────────
+
+class CreateCourseRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=50)   # 예: course-newcourse
+    name: str = Field(min_length=1, max_length=100)
+    track_type: str = "main"                        # main | sub
+    classroom: str = Field(min_length=1, max_length=100)
+    duration_months: int = Field(ge=1, le=24)
+    daily_start_time: str                           # HH:MM
+    daily_end_time: str
+    description: Optional[str] = None
+    teacher_id: Optional[str] = None               # 담당 강사 UUID
+    start_date: Optional[str] = None               # YYYY-MM-DD (서브 과정 운영 기간)
+    end_date: Optional[str] = None
+
+
+class UpdateCourseRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    track_type: Optional[str] = None
+    classroom: Optional[str] = None
+    duration_months: Optional[int] = Field(None, ge=1, le=24)
+    daily_start_time: Optional[str] = None
+    daily_end_time: Optional[str] = None
+    description: Optional[str] = None
+    teacher_id: Optional[str] = None               # None = 변경 없음, "" = 배정 해제
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+
+class CreateCohortRequest(BaseModel):
+    cohort_number: int = Field(ge=1)
+    status: str = "upcoming"                        # upcoming | in_progress | completed
+    start_date: Optional[str] = None               # YYYY-MM-DD
+    end_date: Optional[str] = None
+
+
+class UpdateCohortRequest(BaseModel):
+    cohort_number: Optional[int] = Field(None, ge=1)
+    status: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None

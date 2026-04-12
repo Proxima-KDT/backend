@@ -1076,11 +1076,12 @@ async def list_teacher_assessments(
                 for f in (sub["files"] if isinstance(sub["files"], list) else []):
                     if not isinstance(f, dict):
                         continue
+                    raw_size = f.get("size")
                     sub_files.append(
                         FileItem(
                             name=f.get("name", f.get("path", "").split("/")[-1]),
-                            size=f.get("size"),
-                            url=f.get("path", ""),
+                            size=str(raw_size) if raw_size is not None else None,
+                            url=f.get("url", f.get("path", "")),
                         )
                     )
             student_submissions.append(
@@ -1144,7 +1145,8 @@ async def get_assessment_submission_download_urls(
     for f in (raw_files if isinstance(raw_files, list) else []):
         if not isinstance(f, dict):
             continue
-        bucket_path = f.get("path", "")
+        # path 우선, 없으면 url 키도 확인 (샘플/외부 URL 지원)
+        bucket_path = f.get("path") or f.get("url") or ""
         name = f.get("name", bucket_path.split("/")[-1])
         if not bucket_path:
             continue

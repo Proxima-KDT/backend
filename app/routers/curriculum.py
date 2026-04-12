@@ -1,6 +1,6 @@
 ﻿from datetime import date
-from fastapi import APIRouter, HTTPException, Depends
-from typing import List
+from fastapi import APIRouter, HTTPException, Depends, Query
+from typing import List, Optional
 from app.dependencies import get_current_user
 from app.utils.supabase_client import get_supabase
 from app.schemas.curriculum import CurriculumPhaseResponse, PhaseTaskItem
@@ -55,27 +55,32 @@ def _compute_phase(phase: dict) -> tuple:
 
 
 @router.get("", response_model=List[CurriculumPhaseResponse])
-def get_curriculum(user=Depends(get_current_user)):
-    """현재 로그인한 학생의 수강 과정 curriculum만 반환.
-    course_id가 지정되지 않은 사용자(강사/관리자)는 빈 배열."""
+def get_curriculum(
+    user=Depends(get_current_user),
+    course_id: Optional[str] = Query(None),
+):
+    """커리큘럼 반환.
+    - course_id 쿼리 파라미터가 있으면 해당 과정 커리큘럼 반환 (강사용).
+    - 없으면 로그인한 학생의 수강 과정 커리큘럼 반환."""
     supabase = get_supabase()
 
-    # 학생의 course_id 조회 (강사/관리자는 NULL → 빈 배열)
-    me = (
-        supabase.table("users")
-        .select("course_id")
-        .eq("id", user["id"])
-        .limit(1)
-        .execute()
-    )
-    my_course_id = (me.data[0].get("course_id") if me.data else None)
-    if not my_course_id:
-        return []
+    if not course_id:
+        # 학생의 course_id 조회 (강사/관리자는 NULL → 빈 배열)
+        me = (
+            supabase.table("users")
+            .select("course_id")
+            .eq("id", user["id"])
+            .limit(1)
+            .execute()
+        )
+        course_id = (me.data[0].get("course_id") if me.data else None)
+        if not course_id:
+            return []
 
     phases_res = (
         supabase.table("curriculum")
         .select("*")
-        .eq("course_id", my_course_id)
+        .eq("course_id", course_id)
         .order("phase")
         .execute()
     )
@@ -104,25 +109,33 @@ def get_curriculum(user=Depends(get_current_user)):
 
 
 @router.get("/course-period", response_model=dict)
-def get_course_period(user=Depends(get_current_user)):
-    """현재 학생의 수강 과정 기간 반환 (과정명 + 기수 날짜)."""
+def get_course_period(
+    user=Depends(get_current_user),
+    course_id: Optional[str] = Query(None),
+):
+    """수강 과정 기간 반환 (과정명 + 기수 날짜).
+    - course_id 쿼리 파라미터가 있으면 해당 과정 정보 반환 (강사용).
+    - 없으면 로그인한 학생의 수강 과정 정보 반환."""
     supabase = get_supabase()
 
-    user_res = (
-        supabase.table("users")
-        .select("course_id, cohort_id")
-        .eq("id", user["id"])
-        .limit(1)
-        .execute()
-    )
-    if not user_res.data:
-        return {}
-    row = user_res.data[0]
-    course_id = row.get("course_id")
-    cohort_id = row.get("cohort_id")
+    cohort_id = None
 
     if not course_id:
-        return {}
+        user_res = (
+            supabase.table("users")
+            .select("course_id, cohort_id")
+            .eq("id", user["id"])
+            .limit(1)
+            .execute()
+        )
+        if not user_res.data:
+            return {}
+        row = user_res.data[0]
+        course_id = row.get("course_id")
+        cohort_id = row.get("cohort_id")
+
+        if not course_id:
+            return {}
 
     # 과정 기본 정보
     course_res = (

@@ -140,8 +140,8 @@ async def end_interview(session_id: str, user_id: str) -> dict:
     response = await _get_client().chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": report_prompt}],
-        temperature=0.3,
-        max_tokens=600,
+        temperature=0.1,
+        max_tokens=800,
         response_format={"type": "json_object"},
     )
 

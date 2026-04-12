@@ -12,8 +12,66 @@ from app.schemas.attendance import (
 
 router = APIRouter(prefix="/api/attendance", tags=["attendance"])
 
-CHECKIN_LATE_HOUR = 9
-CHECKIN_LATE_MINUTE = 10
+CHECKIN_LATE_MINUTE = 30   # 수업 시작 후 N분까지 지각, 이후 결석
+CHECKIN_WINDOW_MINUTES = 30  # 수업 시작 N분 전부터 체크인 활성화
+
+
+def _get_user_course_schedule(supabase, user_id: str) -> dict:
+    """사용자의 수업 시작/종료 시간 조회. 과목 미배정 시 기본값 반환."""
+    user_res = supabase.table("users").select("course_id").eq("id", user_id).execute()
+    course_id = (user_res.data or [{}])[0].get("course_id")
+    if course_id:
+        course_res = (
+            supabase.table("courses")
+            .select("daily_start_time, daily_end_time")
+            .eq("id", course_id)
+            .execute()
+        )
+        if course_res.data:
+            return course_res.data[0]
+    return {"daily_start_time": "09:00", "daily_end_time": "17:50"}
+
+
+@router.get("/window")
+def get_attendance_window(user=Depends(get_current_user)):
+    """출석 서명 활성화 가능 여부를 반환한다.
+    - 주말(토·일): 비활성화
+    - 수업 시작 30분 전 이전: 비활성화
+    """
+    supabase = get_supabase()
+    now = datetime.now(KST)
+
+    is_weekend = now.weekday() >= 5  # 5=Saturday, 6=Sunday
+
+    schedule = _get_user_course_schedule(supabase, user["id"])
+    start_h, start_m = map(int, schedule["daily_start_time"].split(":"))
+    end_h, end_m = map(int, schedule["daily_end_time"].split(":"))
+
+    # 체크인 활성화 시각 = 수업 시작 30분 전
+    open_total = start_h * 60 + start_m - CHECKIN_WINDOW_MINUTES
+    open_h, open_m = divmod(max(open_total, 0), 60)
+    open_at = f"{open_h:02d}:{open_m:02d}"
+
+    now_minutes = now.hour * 60 + now.minute
+    is_before_window = now_minutes < open_total
+
+    can_checkin = not is_weekend and not is_before_window
+
+    reason = None
+    if is_weekend:
+        reason = "주말에는 출석 서명이 비활성화됩니다."
+    elif is_before_window:
+        reason = f"출석 서명은 수업 {CHECKIN_WINDOW_MINUTES}분 전({open_at})부터 활성화됩니다."
+
+    return {
+        "is_weekend": is_weekend,
+        "can_checkin": can_checkin,
+        "is_before_window": is_before_window,
+        "open_at": open_at,
+        "class_start": schedule["daily_start_time"],
+        "class_end": schedule["daily_end_time"],
+        "reason": reason,
+    }
 
 
 @router.get("/today", response_model=AttendanceRecordResponse)
@@ -49,6 +107,21 @@ def check_in(body: CheckInRequest, user=Depends(get_current_user)):
     now = datetime.now(KST)
     time_str = now.strftime("%H:%M")
 
+    # 주말 체크인 차단
+    if now.weekday() >= 5:
+        raise HTTPException(status_code=400, detail="주말에는 출석 체크인이 불가합니다.")
+
+    # 수업 시작 30분 전 이전 체크인 차단
+    schedule = _get_user_course_schedule(supabase, user["id"])
+    start_h, start_m = map(int, schedule["daily_start_time"].split(":"))
+    open_total = start_h * 60 + start_m - CHECKIN_WINDOW_MINUTES
+    open_h, open_m = divmod(max(open_total, 0), 60)
+    if (now.hour * 60 + now.minute) < open_total:
+        raise HTTPException(
+            status_code=400,
+            detail=f"출석 체크인은 {open_h:02d}:{open_m:02d}부터 가능합니다.",
+        )
+
     existing = (
         supabase.table("attendance")
         .select("id")
@@ -59,8 +132,8 @@ def check_in(body: CheckInRequest, user=Depends(get_current_user)):
     if existing.data:
         raise HTTPException(status_code=409, detail="이미 오늘 출석 체크인이 완료되었습니다.")
 
-    # 09:10 기준으로 출석/지각 판정
-    late_limit = CHECKIN_LATE_HOUR * 60 + CHECKIN_LATE_MINUTE
+    # 수업 시작 시각 기준 출석/지각 판정 (start + 30분 이후 → 지각)
+    late_limit = start_h * 60 + start_m + CHECKIN_LATE_MINUTE
     status = "late" if (now.hour * 60 + now.minute) > late_limit else "present"
 
     payload = {

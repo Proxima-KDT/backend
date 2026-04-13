@@ -17,7 +17,6 @@ Tool 구현은 ai_agent_service.py 의 _tool_* 함수들을 재사용한다
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from operator import add
@@ -32,7 +31,6 @@ from app.services.ai_agent_service import (
     MODEL_NAME,
     TEMPERATURE,
     _get_client,
-    _log_to_supabase,
     _tool_get_assignment_submission_stats,
     _tool_get_at_risk_students,
     _tool_get_class_attendance_summary,

@@ -1,13 +1,10 @@
 import uuid
 import json
-from typing import Optional
 from openai import AsyncOpenAI
 from app.config import get_settings
 from app.utils.prompts import (
     get_interview_system_prompt,
     get_report_prompt,
-    COMPANY_CONTEXT,
-    POSITION_CONTEXT,
 )
 
 # 인메모리 세션 저장소 (추후 Supabase Redis로 교체)

@@ -134,7 +134,6 @@ def list_manage_bookings(
     user=Depends(get_teacher_or_admin),
 ):
     """상담 예약 목록 — 강사: 본인 예약만 / 관리자: 전체"""
-    from datetime import date as date_type
 
     supabase = get_supabase()
 

@@ -5,7 +5,6 @@ from app.utils.supabase_client import get_supabase
 from app.schemas.subject import (
     SubjectResponse,
     ConceptResponse,
-    ConceptDetailResponse,
     QuizProblemResponse,
     SubjectProgressResponse,
     ProgressData,

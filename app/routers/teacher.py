@@ -8,7 +8,6 @@ from app.schemas.teacher import (
     TeacherCourseResponse,
     StudentFile,
     StudentNoteUpdate,
-    AttendanceWeekRecord,
     ClassroomSeatResponse,
     SeatAssignRequest,
     SeatInitRequest,
@@ -20,7 +19,6 @@ from app.schemas.teacher import (
     StudentSubmission,
     FileItem,
     RubricItem,
-    RubricScoreItem,
     TeacherAssessmentResponse,
     AssessmentSubmission,
     AssessmentGradeRequest,
@@ -106,11 +104,24 @@ async def list_students(
     if not course_ids:
         return []
 
+    # 진행 중(in_progress)인 기수의 cohort_id만 추출 → 미래·종료 기수 학생 제외
+    active_cohorts_res = (
+        supabase.table("cohorts")
+        .select("id")
+        .in_("course_id", course_ids)
+        .eq("status", "in_progress")
+        .execute()
+    )
+    active_cohort_ids = [c["id"] for c in (active_cohorts_res.data or [])]
+    if not active_cohort_ids:
+        return []
+
     profiles_res = (
         supabase.table("users")
         .select("*")
         .eq("role", "student")
         .in_("course_id", course_ids)
+        .in_("cohort_id", active_cohort_ids)
         .order("name")
         .execute()
     )
@@ -1260,18 +1271,27 @@ async def confirm_assessment_grade(
     if not existing.data:
         raise HTTPException(status_code=404, detail="제출 기록을 찾을 수 없습니다.")
 
-    update_data = {
-        "score": body.score,
-        "feedback": body.feedback,
-        "status": "graded",
-    }
-    if body.passed is not None:
-        update_data["passed"] = body.passed
-    if body.rubricScores:
-        update_data["rubric"] = [
-            {"item": rs.item, "score": rs.score, "maxScore": rs.maxScore}
-            for rs in body.rubricScores
-        ]
+    if body.require_resubmit:
+        update_data = {
+            "score": None,
+            "passed": None,
+            "rubric_scores": None,
+            "feedback": body.feedback,
+            "status": "resubmit_required",
+        }
+    else:
+        update_data = {
+            "score": body.score,
+            "feedback": body.feedback,
+            "status": "graded",
+        }
+        if body.passed is not None:
+            update_data["passed"] = body.passed
+        if body.rubricScores:
+            update_data["rubric_scores"] = [
+                {"item": rs.item, "score": rs.score, "maxScore": rs.maxScore}
+                for rs in body.rubricScores
+            ]
 
     existing_rec = existing.data[0] if isinstance(existing.data, list) else existing.data
     supabase.table("assessment_submissions").update(update_data).eq(
@@ -1690,7 +1710,6 @@ def _infer_assessment_status(assessment: dict) -> str:
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
     start_raw = assessment.get("period_start")
-    end_raw = assessment.get("period_end")
     try:
         period_start = datetime.fromisoformat(start_raw).replace(tzinfo=timezone.utc) if start_raw else None
     except (ValueError, TypeError):

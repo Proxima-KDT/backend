@@ -1,6 +1,4 @@
 ﻿from datetime import date, datetime, timezone, timedelta
-
-KST = timezone(timedelta(hours=9))
 from fastapi import APIRouter, HTTPException, Depends
 from app.dependencies import get_current_user
 from app.utils.supabase_client import get_supabase
@@ -9,6 +7,8 @@ from app.schemas.attendance import (
     AttendanceRecordResponse,
     AttendanceMonthlyResponse,
 )
+
+KST = timezone(timedelta(hours=9))
 
 router = APIRouter(prefix="/api/attendance", tags=["attendance"])
 

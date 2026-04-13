@@ -190,10 +190,11 @@ class TeacherAssessmentResponse(BaseModel):
 
 
 class AssessmentGradeRequest(BaseModel):
-    score: int
+    score: Optional[int] = None
     passed: Optional[bool] = None
     feedback: Optional[str] = None
     rubricScores: Optional[List[RubricScoreItem]] = None
+    require_resubmit: bool = False
 
 
 # ── 문제 관리 ──────────────────────────────────────

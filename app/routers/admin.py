@@ -23,7 +23,6 @@ from app.schemas.admin import (
     EquipmentStatusUpdate,
     EquipmentRequestResponse,
     EquipmentRejectRequest,
-    EquipmentHistoryItem,
     EquipmentSession,
     AdminRoomResponse,
     RoomCreateRequest,
@@ -619,7 +618,6 @@ def approve_equipment_request(request_id: str, user=Depends(get_current_admin)):
         {"status": "approved", "decided_by": user["id"]}
     ).eq("id", request_id).execute()
 
-    from datetime import datetime
     now_iso = datetime.utcnow().isoformat() + "+00:00"
 
     # 장비 상태 업데이트

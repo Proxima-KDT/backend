@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta, timezone
 from typing import Any, Callable
 
 from app.services.ai_service import _get_client  # OpenAI 클라이언트 재사용

@@ -114,7 +114,8 @@ async def submit_assignment(
     # 파일 업로드
     # 파일명에 한글 등 비ASCII 문자가 있으면 InvalidKey 오류가 발생하므로
     # path에는 UUID 기반 안전한 이름을 사용하고, 원본 파일명은 메타데이터로 보존
-    import uuid, os
+    import uuid
+    import os
     uploaded_files = []
     for file in files:
         contents = await file.read()

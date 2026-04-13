@@ -31,6 +31,7 @@ from app.schemas.admin import (
     RoomStatusUpdate,
     AdminBookedSlotResponse,
 )
+from app.schemas.teacher import CounselingRecordResponse, CounselingNoteUpdate
 from app.services import admin_users_service
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -1108,3 +1109,149 @@ def admin_list_teachers(_admin=Depends(get_current_admin)):
     supabase = get_supabase()
     res = supabase.table("users").select("id, name, email").eq("role", "teacher").order("name").execute()
     return res.data or []
+
+
+# ═══════════════════════════════════════════════════
+# 면담 기록 (관리자 — 음성 업로드 → STT → AI 요약)
+# ═══════════════════════════════════════════════════
+
+
+@router.post("/counseling/upload")
+async def admin_upload_counseling_audio(
+    file: UploadFile = File(...),
+    student_name: str = Query(...),
+    user=Depends(get_current_admin),
+):
+    """면담 오디오 업로드 → Supabase Storage 저장 → Whisper STT → AI 요약"""
+    from app.services.stt_service import transcribe_audio
+    from app.services.ai_service import summarize_counseling
+
+    audio_bytes = await file.read()
+    supabase = get_supabase()
+
+    today_str = date.today().isoformat()
+    safe_filename = file.filename.replace(" ", "_") if file.filename else "audio.mp3"
+    storage_path = f"counseling/{user['id']}/{today_str}_{safe_filename}"
+    content_type = file.content_type or "audio/mpeg"
+
+    audio_url = None
+    try:
+        supabase.storage.from_("uploads").upload(
+            storage_path,
+            audio_bytes,
+            {"content-type": content_type},
+        )
+        audio_url = supabase.storage.from_("uploads").get_public_url(storage_path)
+    except Exception:
+        pass
+
+    transcript = await transcribe_audio(audio_bytes, file.filename or safe_filename)
+    summary_result = await summarize_counseling(transcript)
+
+    res = (
+        supabase.table("counseling_records")
+        .insert({
+            "counselor_id": user["id"],
+            "student_name": student_name,
+            "date": today_str,
+            "duration": summary_result.get("duration"),
+            "transcript": transcript,
+            "summary": summary_result.get("summary"),
+            "action_items": summary_result.get("action_items", []),
+            "speakers": summary_result.get("speakers", []),
+            "audio_url": audio_url,
+        })
+        .execute()
+    )
+
+    record = res.data[0]
+    return {
+        "id": str(record["id"]),
+        "student_name": student_name,
+        "date": today_str,
+        "duration": summary_result.get("duration"),
+        "summary": summary_result.get("summary"),
+        "action_items": summary_result.get("action_items", []),
+        "speakers": summary_result.get("speakers", []),
+        "audio_url": audio_url,
+    }
+
+
+@router.get("/counseling-records", response_model=List[CounselingRecordResponse])
+async def admin_list_counseling_records(user=Depends(get_current_admin)):
+    """면담 기록 목록 조회 — 관리자 본인이 등록한 기록만 반환"""
+    supabase = get_supabase()
+
+    res = (
+        supabase.table("counseling_records")
+        .select("*")
+        .eq("counselor_id", user["id"])
+        .order("date", desc=True)
+        .execute()
+    )
+    records = res.data or []
+
+    student_ids = list({r["student_id"] for r in records if r.get("student_id")})
+    student_course_map: dict = {}
+    course_name_map: dict = {}
+    if student_ids:
+        stu_res = (
+            supabase.table("users")
+            .select("id,course_id")
+            .in_("id", student_ids)
+            .execute()
+        )
+        student_course_map = {u["id"]: u.get("course_id") for u in (stu_res.data or [])}
+        distinct_course_ids = list({cid for cid in student_course_map.values() if cid})
+        if distinct_course_ids:
+            c_res = (
+                supabase.table("courses")
+                .select("id,name")
+                .in_("id", distinct_course_ids)
+                .execute()
+            )
+            course_name_map = {c["id"]: c["name"] for c in (c_res.data or [])}
+
+    return [
+        CounselingRecordResponse(
+            id=str(r["id"]),
+            student_id=str(r["student_id"]) if r.get("student_id") else None,
+            student_name=r.get("student_name"),
+            course_name=course_name_map.get(student_course_map.get(r.get("student_id"))),
+            date=r.get("date", ""),
+            duration=r.get("duration"),
+            summary=r.get("summary"),
+            action_items=r.get("action_items") or [],
+            speakers=r.get("speakers") or [],
+            audio_url=r.get("audio_url"),
+            note=r.get("note"),
+        )
+        for r in records
+    ]
+
+
+@router.patch("/counseling-records/{record_id}/note")
+async def admin_update_counseling_note(
+    record_id: str,
+    body: CounselingNoteUpdate,
+    user=Depends(get_current_admin),
+):
+    """관리자 면담 메모 저장/수정"""
+    supabase = get_supabase()
+
+    existing = (
+        supabase.table("counseling_records")
+        .select("id, counselor_id")
+        .eq("id", record_id)
+        .execute()
+    )
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="면담 기록을 찾을 수 없습니다.")
+    if str(existing.data[0]["counselor_id"]) != str(user["id"]):
+        raise HTTPException(status_code=403, detail="본인 기록만 수정할 수 있습니다.")
+
+    supabase.table("counseling_records").update({"note": body.note}).eq(
+        "id", record_id
+    ).execute()
+
+    return {"message": "메모가 저장되었습니다."}

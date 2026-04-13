@@ -11,6 +11,7 @@ class EquipmentResponse(BaseModel):
     borrower_name: Optional[str] = None
     borrower_id: Optional[str] = None
     borrowed_at: Optional[str] = None
+    image_url: Optional[str] = None
 
 
 class EquipmentBorrowRequest(BaseModel):

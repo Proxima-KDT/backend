@@ -35,6 +35,7 @@ def list_equipment(
             borrower_name=item.get("borrower_name"),
             borrower_id=str(item["borrower_id"]) if item.get("borrower_id") else None,
             borrowed_at=item.get("borrowed_at"),
+            image_url=item.get("image_url"),
         )
         for item in items
     ]

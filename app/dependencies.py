@@ -42,8 +42,9 @@ async def get_current_user(
                 algorithms=["ES256", "RS256"],
                 audience="authenticated",
             )
-        except JWTError:
-            # JWKS 검증 실패 시 레거시 HS256 secret으로 재시도
+        except (JWTError, httpx.HTTPError, httpx.RemoteProtocolError, Exception) as e:
+            # JWKS 네트워크 오류 또는 검증 실패 시 레거시 HS256 secret으로 재시도
+            logger.warning("JWKS 검증 실패, HS256 폴백: %s", type(e).__name__)
             payload = jwt.decode(
                 token,
                 settings.SUPABASE_JWT_SECRET,

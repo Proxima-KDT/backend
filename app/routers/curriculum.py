@@ -116,63 +116,70 @@ def get_course_period(
     """수강 과정 기간 반환 (과정명 + 기수 날짜).
     - course_id 쿼리 파라미터가 있으면 해당 과정 정보 반환 (강사용).
     - 없으면 로그인한 학생의 수강 과정 정보 반환."""
+    from app.utils.supabase_client import reset_supabase
+
+    def _fetch(sb):
+        cohort_id = None
+        cid = course_id
+
+        if not cid:
+            user_res = (
+                sb.table("users")
+                .select("course_id, cohort_id")
+                .eq("id", user["id"])
+                .limit(1)
+                .execute()
+            )
+            if not user_res.data:
+                return {}
+            row = user_res.data[0]
+            cid = row.get("course_id")
+            cohort_id = row.get("cohort_id")
+            if not cid:
+                return {}
+
+        course_res = (
+            sb.table("courses")
+            .select("name,track_type,classroom,duration_months")
+            .eq("id", cid)
+            .limit(1)
+            .execute()
+        )
+        course = course_res.data[0] if course_res.data else {}
+
+        start_date = end_date = cohort_number = None
+        if cohort_id:
+            cohort_res = (
+                sb.table("cohorts")
+                .select("cohort_number,start_date,end_date")
+                .eq("id", cohort_id)
+                .limit(1)
+                .execute()
+            )
+            if cohort_res.data:
+                c = cohort_res.data[0]
+                cohort_number = c.get("cohort_number")
+                start_date = c.get("start_date")
+                end_date = c.get("end_date")
+
+        return {
+            "course_id": cid,
+            "course_name": course.get("name"),
+            "track_type": course.get("track_type"),
+            "classroom": course.get("classroom"),
+            "duration_months": course.get("duration_months"),
+            "cohort_number": cohort_number,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+
     supabase = get_supabase()
-
-    cohort_id = None
-
-    if not course_id:
-        user_res = (
-            supabase.table("users")
-            .select("course_id, cohort_id")
-            .eq("id", user["id"])
-            .limit(1)
-            .execute()
-        )
-        if not user_res.data:
-            return {}
-        row = user_res.data[0]
-        course_id = row.get("course_id")
-        cohort_id = row.get("cohort_id")
-
-        if not course_id:
-            return {}
-
-    # 과정 기본 정보
-    course_res = (
-        supabase.table("courses")
-        .select("name,track_type,classroom,duration_months")
-        .eq("id", course_id)
-        .limit(1)
-        .execute()
-    )
-    course = course_res.data[0] if course_res.data else {}
-
-    start_date = end_date = cohort_number = None
-
-    if cohort_id:
-        cohort_res = (
-            supabase.table("cohorts")
-            .select("cohort_number,start_date,end_date")
-            .eq("id", cohort_id)
-            .limit(1)
-            .execute()
-        )
-        if cohort_res.data:
-            c = cohort_res.data[0]
-            cohort_number = c.get("cohort_number")
-            start_date = c.get("start_date")
-            end_date = c.get("end_date")
-
-    return {
-        "course_id": course_id,
-        "course_name": course.get("name"),
-        "track_type": course.get("track_type"),
-        "classroom": course.get("classroom"),
-        "duration_months": course.get("duration_months"),
-        "cohort_number": cohort_number,
-        "start_date": start_date,
-        "end_date": end_date,
-    }
+    try:
+        return _fetch(supabase)
+    except Exception:
+        # stale connection → 클라이언트 재생성 후 1회 재시도
+        supabase = reset_supabase()
+        return _fetch(supabase)
 
 
 @router.get("/{phase_id}/tasks", response_model=List[PhaseTaskItem])

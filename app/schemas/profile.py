@@ -8,10 +8,10 @@ class ProfileResponse(BaseModel):
     email: Optional[str]
     avatar_url: Optional[str]
     role: str
-    target_jobs: List[str] = []
     overall_score: int = 0
     tier: str = "Beginner"
     course_name: Optional[str] = None
+    course_track_type: Optional[str] = None
     cohort_number: Optional[int] = None
     course_start_date: Optional[str] = None
     course_end_date: Optional[str] = None
@@ -20,9 +20,6 @@ class ProfileResponse(BaseModel):
     teacher_name: Optional[str] = None
     mentor_name: Optional[str] = None
 
-
-class ProfileUpdateTargetJobs(BaseModel):
-    jobs: List[str]
 
 
 class StudentFileItem(BaseModel):

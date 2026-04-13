@@ -28,7 +28,7 @@ def list_counselors(user=Depends(get_current_user)):
     """담당 강사 목록 조회 — 학생은 자신의 course에 배정된 강사만 조회"""
     supabase = get_supabase()
 
-    # 학생인 경우: teacher_courses로 담당 강사만 필터링
+    # 학생인 경우: teacher_courses + mentor_courses로 담당 강사/멘토 필터링
     if user.get("role") == "student":
         user_res = (
             supabase.table("users")
@@ -41,6 +41,7 @@ def list_counselors(user=Depends(get_current_user)):
         if not course_id:
             return []
 
+        # 담당 강사 조회
         tc_res = (
             supabase.table("teacher_courses")
             .select("teacher_id")
@@ -48,13 +49,24 @@ def list_counselors(user=Depends(get_current_user)):
             .execute()
         )
         teacher_ids = [row["teacher_id"] for row in (tc_res.data or [])]
-        if not teacher_ids:
+
+        # 담당 멘토 조회
+        mc_res = (
+            supabase.table("mentor_courses")
+            .select("mentor_id")
+            .eq("course_id", course_id)
+            .execute()
+        )
+        mentor_ids = [row["mentor_id"] for row in (mc_res.data or [])]
+
+        all_ids = list(set(teacher_ids + mentor_ids))
+        if not all_ids:
             return []
 
         res = (
             supabase.table("users")
             .select("id, name, role")
-            .in_("id", teacher_ids)
+            .in_("id", all_ids)
             .execute()
         )
     else:

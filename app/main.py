@@ -9,7 +9,6 @@ from app.routers import (
     curriculum,
     equipment,
     interview,
-    jobs,
     problems,
     submissions,
     teacher,
@@ -63,7 +62,6 @@ app.include_router(rooms.router)
 app.include_router(counseling.router)
 app.include_router(interview.router)
 app.include_router(voice.router)
-app.include_router(jobs.router)
 app.include_router(questions.router)
 app.include_router(skills.router)
 app.include_router(teacher.router)

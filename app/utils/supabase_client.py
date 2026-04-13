@@ -11,3 +11,11 @@ def get_supabase() -> Client:
         settings = get_settings()
         _supabase_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
     return _supabase_client
+
+
+def reset_supabase() -> Client:
+    """stale connection 오류 발생 시 클라이언트 재생성"""
+    global _supabase_client
+    settings = get_settings()
+    _supabase_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
+    return _supabase_client

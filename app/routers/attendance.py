@@ -16,6 +16,11 @@ CHECKIN_LATE_MINUTE = 30   # 수업 시작 후 N분까지 지각, 이후 결석
 CHECKIN_WINDOW_MINUTES = 30  # 수업 시작 N분 전부터 체크인 활성화
 
 
+def _normalize_time(t: str) -> str:
+    """HH:MM:SS 또는 HH:MM 형식을 HH:MM으로 정규화한다."""
+    return ":".join(t.split(":")[:2])
+
+
 def _get_user_course_schedule(supabase, user_id: str) -> dict:
     """사용자의 수업 시작/종료 시간 조회. 과목 미배정 시 기본값 반환."""
     user_res = supabase.table("users").select("course_id").eq("id", user_id).execute()
@@ -28,7 +33,11 @@ def _get_user_course_schedule(supabase, user_id: str) -> dict:
             .execute()
         )
         if course_res.data:
-            return course_res.data[0]
+            row = course_res.data[0]
+            return {
+                "daily_start_time": _normalize_time(row["daily_start_time"]),
+                "daily_end_time": _normalize_time(row["daily_end_time"]),
+            }
     return {"daily_start_time": "09:00", "daily_end_time": "17:50"}
 
 

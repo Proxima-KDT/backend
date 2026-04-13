@@ -3,7 +3,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from app.dependencies import get_current_user
 from app.utils.supabase_client import get_supabase
-from app.schemas.profile import ProfileResponse, ProfileUpdateTargetJobs, SkillScoreResponse, StudentFileListResponse, StudentFileItem
+from app.schemas.profile import ProfileResponse, SkillScoreResponse, StudentFileListResponse, StudentFileItem
 
 router = APIRouter(prefix="/api/profile", tags=["profile"])
 
@@ -48,18 +48,20 @@ def get_my_profile(user=Depends(get_current_user)):
 
     daily_start_time = None
     daily_end_time = None
+    course_track_type = None
     teacher_name = None
 
     if course_id:
         course_res = (
             supabase.table("courses")
-            .select("name, daily_start_time, daily_end_time")
+            .select("name, track_type, daily_start_time, daily_end_time")
             .eq("id", course_id)
             .execute()
         )
         if course_res.data:
             course_data = course_res.data[0]
             course_name = course_data.get("name")
+            course_track_type = course_data.get("track_type")
             daily_start_time = str(course_data["daily_start_time"])[:5] if course_data.get("daily_start_time") else None
             daily_end_time = str(course_data["daily_end_time"])[:5] if course_data.get("daily_end_time") else None
 
@@ -108,10 +110,10 @@ def get_my_profile(user=Depends(get_current_user)):
         email=p.get("email") or user.get("email"),
         avatar_url=p.get("avatar_url"),
         role=p.get("role", "student"),
-        target_jobs=p.get("target_jobs") or [],
         overall_score=p.get("overall_score", 0),
         tier=p.get("tier", "Beginner"),
         course_name=course_name,
+        course_track_type=course_track_type,
         cohort_number=cohort_number,
         course_start_date=course_start_date,
         course_end_date=course_end_date,
@@ -121,16 +123,6 @@ def get_my_profile(user=Depends(get_current_user)):
         mentor_name=mentor_name,
     )
 
-
-@router.put("/target-jobs")
-def update_target_jobs(body: ProfileUpdateTargetJobs, user=Depends(get_current_user)):
-    """목표 직종 업데이트"""
-    supabase = get_supabase()
-
-    supabase.table("users").update({"target_jobs": body.jobs}).eq(
-        "id", user["id"]
-    ).execute()
-    return {"message": "목표 직종이 업데이트되었습니다.", "jobs": body.jobs}
 
 
 @router.post("/avatar")

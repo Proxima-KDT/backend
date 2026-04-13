@@ -1088,7 +1088,7 @@ async def list_teacher_assessments(
                 AssessmentSubmission(
                     studentId=sid,
                     studentName=student.get("name", ""),
-                    status=sub["status"] if sub else "pending",
+                    status=sub["status"] if sub else _infer_assessment_status(a),
                     submittedAt=sub.get("submitted_at") if sub else None,
                     files=sub_files,
                     score=sub.get("score") if sub else None,
@@ -1679,6 +1679,25 @@ async def answer_question(
 # ═══════════════════════════════════════════════════
 # 헬퍼 함수
 # ═══════════════════════════════════════════════════
+
+
+def _infer_assessment_status(assessment: dict) -> str:
+    """제출 레코드가 없는 학생의 상태를 평가 기간 날짜 기준으로 추론.
+    - period_start 이전: locked
+    - period_start ~ period_end 사이: open (미제출)
+    - period_end 이후: open (미제출, 기간 만료)
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    start_raw = assessment.get("period_start")
+    end_raw = assessment.get("period_end")
+    try:
+        period_start = datetime.fromisoformat(start_raw).replace(tzinfo=timezone.utc) if start_raw else None
+    except (ValueError, TypeError):
+        period_start = None
+    if period_start and now < period_start:
+        return "locked"
+    return "open"
 
 
 def _get_teacher_course_ids(
